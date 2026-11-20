@@ -1,0 +1,44 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasVerifiedEmail() {
+      return isSignedIn() &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email is string;
+    }
+
+    function isSuperAdmin() {
+      return hasVerifiedEmail() &&
+             request.auth.token.email.lower() == 'uk9798989@gmail.com';
+    }
+
+    // Menu item custom photos: readable by menu cards, writable/deletable only by verified SuperAdmin
+    match /menu-items/{itemId}/{fileName} {
+      allow read: if true;
+      allow write: if isSuperAdmin() &&
+                      request.resource != null &&
+                      request.resource.size < 5 * 1024 * 1024 &&
+                      request.resource.contentType.matches('image/.*');
+      allow delete: if isSuperAdmin();
+    }
+
+    // Branch seasonal banner images: readable by customers, writable by verified admins (branch isolation enforced in Firestore /branch_banners)
+    match /branch-banners/{branchId}/{bannerId}/{fileName} {
+      allow read: if true;
+      allow write: if hasVerifiedEmail() &&
+                      request.resource != null &&
+                      request.resource.size < 5 * 1024 * 1024 &&
+                      request.resource.contentType.matches('image/.*');
+      allow delete: if hasVerifiedEmail();
+    }
+
+    // Deny all other paths by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

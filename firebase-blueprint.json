@@ -1,0 +1,283 @@
+{
+  "entities": {
+    "CafeBranch": {
+      "title": "CafeBranch",
+      "description": "Dynamic restaurant branch managed by SuperAdmin for scalable multi-branch routing and order isolation.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full branch display name." },
+        "shortLabel": { "type": "string", "description": "Compact label shown in pickers and dashboards (e.g. Branch 3 (Johar Town))." },
+        "shortAddress": { "type": "string", "description": "Physical street address of the branch." },
+        "areas": { "type": "array", "description": "Neighborhoods/zones served by this branch for delivery routing." },
+        "latitude": { "type": "number", "description": "Branch WGS84 latitude for GPS nearest-branch sorting." },
+        "longitude": { "type": "number", "description": "Branch WGS84 longitude for GPS nearest-branch sorting." },
+        "mapUrl": { "type": "string", "description": "Official Google Maps share link for directions." },
+        "openHours": { "type": "string", "description": "Daily operating hours label." },
+        "deliveryRadiusKm": { "type": "integer", "description": "Maximum local delivery radius in kilometers." },
+        "active": { "type": "boolean", "description": "Whether this branch is actively accepting orders." },
+        "sortOrder": { "type": "integer", "description": "Display ordering priority." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["name", "shortLabel", "shortAddress", "areas", "active", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "MenuItem": {
+      "title": "MenuItem",
+      "description": "Fast-food menu item available globally across Lahori Food Cafe branches.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Display name of the food item." },
+        "description": { "type": "string", "description": "Short marketing description." },
+        "category": { "type": "string", "description": "Menu category pill." },
+        "pricePkr": { "type": "integer", "description": "Unit price in PKR." },
+        "imageKey": { "type": "string", "description": "Visual key for menu item card artwork." },
+        "imageUrl": { "type": "string", "description": "Optional custom photo download URL from Firebase Storage or external HTTPS image URL." },
+        "badgeText": { "type": "string", "description": "Optional badge label such as BESTSELLER or SPICY." },
+        "available": { "type": "boolean", "description": "Whether item is currently available." },
+        "sortOrder": { "type": "integer", "description": "Ordering priority in menu grid." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["name", "description", "category", "pricePkr", "imageKey", "badgeText", "available", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "Promotion": {
+      "title": "Promotion",
+      "description": "Promo code supporting percentage or flat PKR discount.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "Uppercase promo code string." },
+        "discountType": { "type": "string", "enum": ["PERCENT", "FLAT"], "description": "Discount calculation type." },
+        "discountValue": { "type": "integer", "description": "Percentage (1-90) or flat PKR value." },
+        "minOrderPkr": { "type": "integer", "description": "Minimum subtotal in PKR required to apply." },
+        "active": { "type": "boolean", "description": "Whether promotion is currently active." },
+        "branchId": { "type": "string", "description": "Optional branch ID restricting this promo exclusively to customers of that branch (empty string for global promos)." },
+        "branchName": { "type": "string", "description": "Optional branch display name for branch-scoped promos." },
+        "expiresAt": { "type": "string", "format": "date-time", "description": "Optional expiration timestamp for temporary discount codes." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["code", "discountType", "discountValue", "minOrderPkr", "active", "createdAt", "updatedAt"]
+    },
+    "BranchBanner": {
+      "title": "BranchBanner",
+      "description": "Seasonal promotional banner image created by a Branch Admin that only appears for customers who selected that specific branch.",
+      "type": "object",
+      "properties": {
+        "branchId": { "type": "string", "description": "Branch ID that owns this seasonal banner." },
+        "branchName": { "type": "string", "description": "Display name of the branch." },
+        "title": { "type": "string", "description": "Headline displayed on the seasonal banner." },
+        "subtitle": { "type": "string", "description": "Supporting offer copy." },
+        "promoCode": { "type": "string", "description": "Optional linked branch promo code for one-tap apply." },
+        "badgeText": { "type": "string", "description": "Short pill label such as SEASONAL OFFER or LIMITED TIME." },
+        "imageUrl": { "type": "string", "description": "Firebase Storage download URL or HTTPS URL for the seasonal banner artwork." },
+        "targetCategory": { "type": "string", "description": "Menu category to filter when a customer taps the banner." },
+        "active": { "type": "boolean", "description": "Whether the seasonal banner is currently active." },
+        "expiresAt": { "type": "string", "format": "date-time", "description": "Optional expiration timestamp after which the banner automatically hides." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["branchId", "branchName", "title", "subtitle", "promoCode", "badgeText", "imageUrl", "targetCategory", "active", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated customer or staff profile with favorites and RBAC role.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID." },
+        "email": { "type": "string", "description": "Google account email." },
+        "displayName": { "type": "string", "description": "Customer display name." },
+        "role": { "type": "string", "enum": ["Customer", "BranchAdmin", "SuperAdmin"], "description": "RBAC role." },
+        "assignedBranchId": { "type": "string", "description": "Dynamic branch ID if BranchAdmin, or empty string." },
+        "favoriteItemIds": { "type": "array", "description": "List of favorited menu item IDs." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["userId", "email", "displayName", "role", "assignedBranchId", "favoriteItemIds", "createdAt", "updatedAt"]
+    },
+    "SavedAddress": {
+      "title": "SavedAddress",
+      "description": "Customer delivery address mapped automatically to a dynamic branchId.",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string", "description": "Short label like Home or Office." },
+        "streetAddress": { "type": "string", "description": "Complete delivery address (House No, Street, Area, City)." },
+        "area": { "type": "string", "description": "Neighborhood/zone used for branch routing." },
+        "landmark": { "type": "string", "description": "Optional nearby landmark to help the rider." },
+        "branchId": { "type": "string", "description": "Auto-assigned closest branch ID." },
+        "branchName": { "type": "string", "description": "Auto-assigned closest branch name." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["label", "streetAddress", "area", "branchId", "branchName", "createdAt", "updatedAt"]
+    },
+    "BranchAdminEntry": {
+      "title": "BranchAdminEntry",
+      "description": "Authorized Branch Manager assignment managed by SuperAdmin, keyed by normalized email for instant permission revocation.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "description": "Lowercase Google email of branch manager." },
+        "role": { "type": "string", "enum": ["BranchAdmin"], "description": "Assigned RBAC role for branch staff access." },
+        "branchId": { "type": "string", "description": "Assigned dynamic branch ID." },
+        "branchName": { "type": "string", "description": "Human-readable branch name." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["email", "role", "branchId", "branchName", "createdAt", "updatedAt"]
+    },
+    "CafeOrder": {
+      "title": "CafeOrder",
+      "description": "Customer or guest order routed to a dynamic branch with live status tracking and strict per-branch manager isolation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of placer." },
+        "guestSessionId": { "type": "string", "description": "Temporary guest identifier if checked out as guest." },
+        "guestCheckout": { "type": "boolean", "description": "True when placed via Guest Checkout flow." },
+        "customerName": { "type": "string", "description": "Recipient name." },
+        "customerEmail": { "type": "string", "description": "Account email." },
+        "customerPhone": { "type": "string", "description": "Contact phone number." },
+        "orderType": { "type": "string", "enum": ["DELIVERY", "PICKUP"], "description": "Fulfillment mode." },
+        "deliveryAddress": { "type": "string", "description": "Delivery address or Pickup counter note." },
+        "deliveryLatitude": { "type": "number", "description": "Optional customer live GPS latitude attached at delivery checkout." },
+        "deliveryLongitude": { "type": "number", "description": "Optional customer live GPS longitude attached at delivery checkout." },
+        "branchId": { "type": "string", "description": "Assigned dynamic branch ID." },
+        "branchName": { "type": "string", "description": "Assigned branch name." },
+        "branchAdminEmails": { "type": "array", "description": "Optional denormalized manager emails for reference/alerts." },
+        "items": { "type": "array", "description": "Line items ordered." },
+        "itemsSummary": { "type": "string", "description": "Formatted item summary." },
+        "promoCode": { "type": "string", "description": "Applied promo code if any." },
+        "discountPkr": { "type": "integer", "description": "Discount amount in PKR." },
+        "subtotalPkr": { "type": "integer", "description": "Order subtotal in PKR." },
+        "deliveryFeePkr": { "type": "integer", "description": "Delivery fee in PKR." },
+        "totalPkr": { "type": "integer", "description": "Total order price in PKR." },
+        "status": { "type": "string", "enum": ["Confirmed", "Preparing", "Dispatched", "Delivered"], "description": "Live order status." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["userId", "guestSessionId", "guestCheckout", "customerName", "customerEmail", "customerPhone", "orderType", "deliveryAddress", "branchId", "branchName", "branchAdminEmails", "items", "itemsSummary", "promoCode", "discountPkr", "subtotalPkr", "deliveryFeePkr", "totalPkr", "status", "createdAt", "updatedAt"]
+    },
+    "OrderReview": {
+      "title": "OrderReview",
+      "description": "Post-delivery customer rating and short comment for a delivered order.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "description": "Delivered order ID being reviewed." },
+        "userId": { "type": "string", "description": "Firebase Auth UID of reviewer." },
+        "customerName": { "type": "string", "description": "Reviewer display name." },
+        "branchId": { "type": "string", "description": "Fulfilling branch ID." },
+        "branchName": { "type": "string", "description": "Fulfilling branch name." },
+        "rating": { "type": "integer", "description": "Star rating from 1 to 5." },
+        "comment": { "type": "string", "description": "Optional short customer comment." },
+        "itemsSummary": { "type": "string", "description": "Summary of delivered items." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["orderId", "userId", "customerName", "branchId", "branchName", "rating", "comment", "itemsSummary", "createdAt", "updatedAt"]
+    },
+    "FcmTokenRecord": {
+      "title": "FcmTokenRecord",
+      "description": "Device Firebase Cloud Messaging token registered to receive real-time order status push notifications.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of device owner." },
+        "token": { "type": "string", "description": "Active FCM registration token." },
+        "platform": { "type": "string", "enum": ["android"], "description": "Client platform identifier." },
+        "appVersion": { "type": "string", "description": "Installed application version." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of token registration." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last token refresh." }
+      },
+      "required": ["userId", "token", "platform", "appVersion", "createdAt", "updatedAt"]
+    },
+    "CafeFeedback": {
+      "title": "CafeFeedback",
+      "description": "General customer feedback from account settings rating food quality and service.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of submitter." },
+        "customerName": { "type": "string", "description": "Customer display name." },
+        "customerEmail": { "type": "string", "description": "Customer Google email." },
+        "branchId": { "type": "string", "description": "Branch ID being rated." },
+        "branchName": { "type": "string", "description": "Branch display name." },
+        "foodRating": { "type": "integer", "description": "Food quality star rating from 1 to 5." },
+        "serviceRating": { "type": "integer", "description": "Service star rating from 1 to 5." },
+        "comment": { "type": "string", "description": "Optional feedback comment (0 to 500 characters)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["userId", "customerName", "customerEmail", "branchId", "branchName", "foodRating", "serviceRating", "comment", "createdAt", "updatedAt"]
+    },
+    "AdminDeliveryNotification": {
+      "title": "AdminDeliveryNotification",
+      "description": "Persistent real-time admin notification created immediately when an order status changes to Delivered.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "description": "Firestore ID of the delivered order." },
+        "orderNumber": { "type": "string", "description": "Short order number (e.g. #A1B2C3)." },
+        "branchId": { "type": "string", "description": "Branch ID that fulfilled the order." },
+        "branchName": { "type": "string", "description": "Branch display name." },
+        "customerName": { "type": "string", "description": "Customer recipient name." },
+        "customerPhone": { "type": "string", "description": "Customer contact phone number." },
+        "deliveryAddress": { "type": "string", "description": "Complete customer delivery address." },
+        "totalPkr": { "type": "integer", "description": "Final order total in PKR (with FREE delivery Rs. 0)." },
+        "orderType": { "type": "string", "enum": ["DELIVERY", "PICKUP"], "description": "Fulfillment type." },
+        "itemsSummary": { "type": "string", "description": "Ordered items summary." },
+        "title": { "type": "string", "description": "Notification title." },
+        "message": { "type": "string", "description": "Notification body message." },
+        "read": { "type": "boolean", "description": "Whether the admin has opened/read this notification." },
+        "deliveredAt": { "type": "string", "format": "date-time", "description": "Server timestamp when order was marked Delivered." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["orderId", "orderNumber", "branchId", "branchName", "customerName", "customerPhone", "deliveryAddress", "totalPkr", "orderType", "itemsSummary", "title", "message", "read", "deliveredAt", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/branches/{branchId}": {
+      "schema": { "$ref": "#/entities/CafeBranch" },
+      "description": "SuperAdmin-managed restaurant branches (supports 10+ unlimited branches)."
+    },
+    "/menu_items/{itemId}": {
+      "schema": { "$ref": "#/entities/MenuItem" },
+      "description": "Global Lahori Food Cafe menu catalog."
+    },
+    "/promotions/{promoId}": {
+      "schema": { "$ref": "#/entities/Promotion" },
+      "description": "Global and branch-exclusive temporary promo codes for percentage or flat PKR discounts."
+    },
+    "/branch_banners/{bannerId}": {
+      "schema": { "$ref": "#/entities/BranchBanner" },
+      "description": "Branch-exclusive seasonal banner images shown only to customers who selected that specific branch."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles, favorites, and RBAC metadata."
+    },
+    "/users/{userId}/addresses/{addressId}": {
+      "schema": { "$ref": "#/entities/SavedAddress" },
+      "description": "Customer saved delivery addresses with optional landmark and auto-routed branchId."
+    },
+    "/users/{userId}/fcm_tokens/{tokenId}": {
+      "schema": { "$ref": "#/entities/FcmTokenRecord" },
+      "description": "Registered Android FCM device tokens for real-time order push notifications."
+    },
+    "/branch_admins/{adminId}": {
+      "schema": { "$ref": "#/entities/BranchAdminEntry" },
+      "description": "SuperAdmin-managed branch manager assignments locked by email and branchId."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/CafeOrder" },
+      "description": "Customer and guest orders routed to dynamic branches with permanent Rs. 0 FREE delivery."
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/OrderReview" },
+      "description": "Customer ratings and comments submitted after orders are delivered."
+    },
+    "/feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/CafeFeedback" },
+      "description": "General customer food and service ratings submitted from Account Settings."
+    },
+    "/admin_notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AdminDeliveryNotification" },
+      "description": "Persistent real-time admin order-delivered notifications scoped by branchId."
+    }
+  }
+}
