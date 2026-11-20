@@ -49,9 +49,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.BranchBanner
+import com.example.model.CafeOrder
 import com.example.model.MenuItem
 import com.example.model.Promotion
 import com.example.model.SeedMenuData
+import com.example.ui.components.ActiveOrderMiniTrackerStrip
 import com.example.ui.components.FoodArtworkBox
 import com.example.ui.components.MenuItemCard
 import com.example.ui.components.formatPkr
@@ -76,7 +78,9 @@ fun ExploreScreen(
     branchBanners: List<BranchBanner> = emptyList(),
     branchPromos: List<Promotion> = emptyList(),
     appliedPromoCode: String = "",
-    onApplyBranchPromo: (String) -> Unit = {}
+    onApplyBranchPromo: (String) -> Unit = {},
+    activeOrder: CafeOrder? = null,
+    onTrackActiveOrder: (CafeOrder) -> Unit = {}
 ) {
     var selectedCategory by remember { mutableStateOf("ALL") }
 
@@ -102,6 +106,16 @@ fun ExploreScreen(
         contentPadding = PaddingValues(top = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
+        if (activeOrder != null) {
+            item(key = "active_order_live_strip") {
+                ActiveOrderMiniTrackerStrip(
+                    order = activeOrder,
+                    onTrackClick = { onTrackActiveOrder(activeOrder) },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+        }
+
         // 0. Branch-Exclusive Seasonal Banners (ONLY shown for customers who selected this branch)
         if (branchBanners.isNotEmpty()) {
             item(key = "branch_seasonal_banners") {

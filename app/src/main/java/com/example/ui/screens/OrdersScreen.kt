@@ -70,6 +70,7 @@ import com.example.model.OrderReview
 import com.example.model.OrderStatus
 import com.example.model.OrderType
 import com.example.model.UiState
+import com.example.ui.components.CurrentOrderDashboardCard
 import com.example.ui.components.formatPkr
 import com.example.ui.theme.LahoriGold
 import com.example.ui.theme.LahoriRed
@@ -233,6 +234,17 @@ fun OrdersScreen(
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        if (activeOrders.isNotEmpty() && onTrackOrder != null) {
+                            item(key = "current_order_live_dashboard") {
+                                val currentOrder = activeOrders.first()
+                                CurrentOrderDashboardCard(
+                                    order = currentOrder,
+                                    activeOrderCount = activeOrders.size,
+                                    onOpenFullDashboard = { onTrackOrder(currentOrder) }
+                                )
                             }
                         }
 

@@ -20,6 +20,7 @@ import com.example.model.Promotion
 import com.example.model.SUPER_ADMIN_EMAIL
 import com.example.model.SavedAddress
 import com.example.model.SeedMenuData
+import com.example.model.TrackedOrderSnapshot
 import com.example.model.UserProfile
 import com.example.model.UserRole
 import com.google.firebase.Firebase
@@ -30,6 +31,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -1027,15 +1029,28 @@ class CafeRepository(
     }
 
     // 5. Orders (Customer, BranchAdmin, SuperAdmin)
-    fun observeOrder(orderId: String): Flow<CafeOrder?> = flow {
+    fun observeOrderSnapshot(orderId: String): Flow<TrackedOrderSnapshot?> = flow {
         requireUserId()
         require(orderId.isNotBlank()) { "Order ID is required" }
         val path = "orders/$orderId"
         val snapshotFlow = db.collection("orders").document(orderId)
-            .snapshots()
+            .snapshots(MetadataChanges.INCLUDE)
             .map { snapshot ->
                 if (snapshot.exists()) {
-                    snapshot.toObject(CafeOrder::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    val order = snapshot.toObject(
+                        CafeOrder::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    if (order != null) {
+                        TrackedOrderSnapshot(
+                            order = order,
+                            isFromCache = snapshot.metadata.isFromCache,
+                            hasPendingWrites = snapshot.metadata.hasPendingWrites(),
+                            lastSyncedAtMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        null
+                    }
                 } else {
                     null
                 }
@@ -1052,6 +1067,9 @@ class CafeRepository(
             }
         snapshotFlow.collect { emit(it) }
     }
+
+    fun observeOrder(orderId: String): Flow<CafeOrder?> =
+        observeOrderSnapshot(orderId).map { it?.order }
 
     fun observeCustomerOrders(userId: String): Flow<List<CafeOrder>> {
         val path = "orders"

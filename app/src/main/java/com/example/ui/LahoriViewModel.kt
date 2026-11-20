@@ -23,6 +23,7 @@ import com.example.model.Promotion
 import com.example.model.SUPER_ADMIN_EMAIL
 import com.example.model.SavedAddress
 import com.example.model.SeedMenuData
+import com.example.model.TrackedOrderSnapshot
 import com.example.model.UiState
 import com.example.model.UserProfile
 import com.example.model.UserRole
@@ -526,14 +527,14 @@ class LahoriViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     @Suppress("OPT_IN_USAGE")
-    val trackedOrderState: StateFlow<UiState<CafeOrder>?> = _trackedOrderId
+    val trackedOrderSnapshotState: StateFlow<UiState<TrackedOrderSnapshot>?> = _trackedOrderId
         .flatMapLatest { orderId ->
             if (orderId.isNullOrBlank()) {
                 flowOf(null)
             } else {
-                repository.observeOrder(orderId)
-                    .map<CafeOrder?, UiState<CafeOrder>?> { order ->
-                        if (order != null) UiState.Success(order)
+                repository.observeOrderSnapshot(orderId)
+                    .map<TrackedOrderSnapshot?, UiState<TrackedOrderSnapshot>?> { snapshot ->
+                        if (snapshot != null) UiState.Success(snapshot)
                         else UiState.Error("Order #$orderId was not found.")
                     }
                     .catch { error ->
@@ -543,6 +544,24 @@ class LahoriViewModel(
                         emit(UiState.Error((firestoreError ?: error).message ?: "Failed to track order in real time"))
                     }
             }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+
+    val trackedOrderState: StateFlow<UiState<CafeOrder>?> = trackedOrderSnapshotState
+        .map { state ->
+            when (state) {
+                null -> null
+                is UiState.Loading -> UiState.Loading
+                is UiState.Error -> UiState.Error(state.message)
+                is UiState.Success -> UiState.Success(state.data.order)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+
+    val latestActiveOrder: StateFlow<CafeOrder?> = customerOrdersState
+        .map { state ->
+            (state as? UiState.Success)?.data
+                ?.firstOrNull { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 

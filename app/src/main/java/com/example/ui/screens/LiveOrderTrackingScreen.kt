@@ -1,6 +1,10 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -9,6 +13,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -32,15 +42,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DeliveryDining
-import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,6 +62,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -58,8 +70,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -69,39 +86,91 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.BranchDirectory
+import com.example.model.CafeBranch
 import com.example.model.CafeOrder
 import com.example.model.OrderReview
 import com.example.model.OrderStatus
-import com.example.model.OrderType
+import com.example.model.OrderTrackingCalculator
+import com.example.model.OrderTrackingSummary
+import com.example.model.TrackedOrderSnapshot
 import com.example.model.UiState
+import com.example.ui.components.LiveRouteProgressCanvas
+import com.example.ui.components.LiveSnapshotStatusChip
 import com.example.ui.components.formatPkr
+import com.example.ui.components.stageIconFor
 import com.example.ui.theme.LahoriBlack
 import com.example.ui.theme.LahoriGold
 import com.example.ui.theme.LahoriRed
 import com.example.ui.theme.LahoriRedDark
 import com.example.ui.theme.LahoriSuccess
 import com.example.ui.theme.LahoriWhite
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun LiveOrderTrackingScreen(
-    trackedOrderState: UiState<CafeOrder>,
+    trackedSnapshotState: UiState<TrackedOrderSnapshot>,
     allActiveOrders: List<CafeOrder>,
     reviewsByOrderId: Map<String, OrderReview>,
     onSelectTrackedOrder: (String) -> Unit,
     onRateOrder: (CafeOrder) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    branches: List<CafeBranch> = BranchDirectory.defaultBranches,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
 ) {
     BackHandler(onBack = onBack)
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+
+    // Track live snapshot transitions while the user watches the dashboard
+    var previousObservedOrderId by remember { mutableStateOf<String?>(null) }
+    var previousObservedStatus by remember { mutableStateOf<OrderStatus?>(null) }
+    var liveTransitionBanner by remember { mutableStateOf<String?>(null) }
+
+    val currentSnapshot = (trackedSnapshotState as? UiState.Success)?.data
+    val currentStatus = currentSnapshot?.order?.let { OrderStatus.fromString(it.status) }
+
+    LaunchedEffect(currentSnapshot?.order?.id, currentStatus) {
+        val snap = currentSnapshot ?: return@LaunchedEffect
+        val statusNow = OrderStatus.fromString(snap.order.status)
+        if (previousObservedOrderId == snap.order.id &&
+            previousObservedStatus != null &&
+            previousObservedStatus != statusNow
+        ) {
+            val isPickup = snap.order.orderType.equals("PICKUP", ignoreCase = true)
+            val label = when (statusNow) {
+                OrderStatus.Confirmed -> "Order Confirmed"
+                OrderStatus.Preparing -> "Preparing in Kitchen"
+                OrderStatus.Dispatched -> if (isPickup) "Ready for Pickup" else "Out for Delivery"
+                OrderStatus.Delivered -> if (isPickup) "Picked Up" else "Delivered"
+            }
+            liveTransitionBanner = "Live update received: $label"
+            delay(5000L)
+            liveTransitionBanner = null
+        }
+        previousObservedOrderId = snap.order.id
+        previousObservedStatus = statusNow
+    }
+
+    // Periodic tick to keep elapsed minutes & relative sync age fresh while active
+    var nowTickMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(currentSnapshot?.order?.id, currentStatus) {
+        nowTickMillis = System.currentTimeMillis()
+        while (currentStatus != null && currentStatus != OrderStatus.Delivered) {
+            delay(5_000L)
+            nowTickMillis = System.currentTimeMillis()
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -120,7 +189,10 @@ fun LiveOrderTrackingScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             IconButton(
                                 onClick = onBack,
                                 modifier = Modifier
@@ -135,37 +207,42 @@ fun LiveOrderTrackingScreen(
                             }
                             Column {
                                 Text(
-                                    text = "LIVE ORDER TRACKER",
+                                    text = "ORDER TRACKING",
                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Real-time Firestore branch sync",
+                                    text = "Real-time Firestore snapshot dashboard",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        if (trackedOrderState is UiState.Success) {
-                            val active = OrderStatus.fromString(trackedOrderState.data.status) != OrderStatus.Delivered
-                            LiveSyncBadge(isActive = active)
+                        if (currentSnapshot != null) {
+                            LiveSnapshotStatusChip(
+                                isCompleted = OrderStatus.fromString(currentSnapshot.order.status) == OrderStatus.Delivered,
+                                isFromCache = currentSnapshot.isFromCache
+                            )
                         }
                     }
 
-                    if (allActiveOrders.size > 1 && trackedOrderState is UiState.Success) {
+                    if (allActiveOrders.size > 1 && currentSnapshot != null) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(allActiveOrders, key = { it.id }) { candidate ->
-                                val isCurrent = candidate.id == trackedOrderState.data.id
+                                val isCurrent = candidate.id == currentSnapshot.order.id
+                                val candidateStatus = OrderStatus.fromString(candidate.status)
                                 FilterChip(
                                     selected = isCurrent,
                                     onClick = { onSelectTrackedOrder(candidate.id) },
                                     label = {
                                         Text(
-                                            text = "#${candidate.id.takeLast(6).uppercase()} • ${OrderStatus.fromString(candidate.status).name}",
+                                            text = "#${candidate.id.takeLast(6).uppercase()} • ${candidateStatus.displayTitle}",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -173,7 +250,8 @@ fun LiveOrderTrackingScreen(
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = LahoriRed,
                                         selectedLabelColor = LahoriWhite
-                                    )
+                                    ),
+                                    modifier = Modifier.testTag("tracker_order_chip_${candidate.id}")
                                 )
                             }
                         }
@@ -188,9 +266,10 @@ fun LiveOrderTrackingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .navigationBarsPadding()
+                .navigationBarsPadding(),
+            contentAlignment = Alignment.TopCenter
         ) {
-            when (trackedOrderState) {
+            when (trackedSnapshotState) {
                 is UiState.Loading -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
@@ -199,7 +278,7 @@ fun LiveOrderTrackingScreen(
                         ) {
                             CircularProgressIndicator(color = LahoriRed)
                             Text(
-                                text = "Connecting to real-time order updates...",
+                                text = "Connecting to real-time Firestore order stream...",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -218,7 +297,9 @@ fun LiveOrderTrackingScreen(
                             shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, LahoriRed),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 600.dp)
                         ) {
                             Column(
                                 modifier = Modifier.padding(24.dp),
@@ -231,7 +312,7 @@ fun LiveOrderTrackingScreen(
                                     color = LahoriRed
                                 )
                                 Text(
-                                    text = trackedOrderState.message,
+                                    text = trackedSnapshotState.message,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -249,37 +330,120 @@ fun LiveOrderTrackingScreen(
                 }
 
                 is UiState.Success -> {
-                    val order = trackedOrderState.data
-                    val status = OrderStatus.fromString(order.status)
-                    val isPickup = order.orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
+                    val snapshot = trackedSnapshotState.data
+                    val order = snapshot.order
+                    val summary = remember(order, nowTickMillis) {
+                        OrderTrackingCalculator.buildSummary(order, nowTickMillis)
+                    }
+                    val syncAgeText = remember(snapshot.lastSyncedAtMillis, nowTickMillis) {
+                        OrderTrackingCalculator.formatRelativeSyncAge(snapshot.lastSyncedAtMillis, nowTickMillis)
+                    }
+                    val branch = remember(order.branchId, branches) {
+                        BranchDirectory.byId(order.branchId, branches)
+                    }
                     val existingReview = reviewsByOrderId[order.id]
+                    val mapsUrl = remember(order, branch) {
+                        if (summary.isPickup) {
+                            branch.mapUrl.ifBlank {
+                                if (branch.hasCoordinates()) {
+                                    "https://www.google.com/maps/search/?api=1&query=${branch.latitude},${branch.longitude}"
+                                } else {
+                                    "https://www.google.com/maps/search/?api=1&query=${Uri.encode(branch.shortAddress)}"
+                                }
+                            }
+                        } else {
+                            order.deliveryGoogleMapsUrl().ifBlank { branch.mapUrl }
+                        }
+                    }
 
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
+                            .widthIn(max = 680.dp)
                             .testTag("live_order_tracking_list"),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // 1. Hero Live Status & Animated Progress Card
+                        // 0. Animated Live Snapshot Change Banner
+                        item(key = "live_transition_flash") {
+                            AnimatedVisibility(
+                                visible = liveTransitionBanner != null,
+                                enter = fadeIn(tween(220)) + expandVertically(),
+                                exit = fadeOut(tween(220)) + shrinkVertically()
+                            ) {
+                                liveTransitionBanner?.let { bannerText ->
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = LahoriSuccess.copy(alpha = 0.16f),
+                                        border = BorderStroke(1.2.dp, LahoriSuccess),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("live_status_transition_banner")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Bolt,
+                                                contentDescription = null,
+                                                tint = LahoriSuccess,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Text(
+                                                text = bannerText,
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                                color = if (isDark) Color(0xFF4ADE80) else LahoriSuccess
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 1. Hero Real-Time Status Dashboard Card with Route Canvas & ETA
                         item(key = "hero_live_status") {
                             LiveOrderHeroCard(
                                 order = order,
-                                status = status,
-                                isPickup = isPickup
+                                summary = summary,
+                                syncAgeText = syncAgeText,
+                                isFromCache = snapshot.isFromCache
                             )
                         }
 
-                        // 2. Step-by-Step Vertical Live Timeline
+                        // 2. Quick Actions & Live Metrics Strip
+                        item(key = "live_metrics_and_actions") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                MetricPillCard(
+                                    label = "ELAPSED",
+                                    value = if (summary.elapsedMinutes <= 0L) "Just now" else "${summary.elapsedMinutes} min",
+                                    icon = Icons.Filled.Schedule,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MetricPillCard(
+                                    label = "DELIVERY FEE",
+                                    value = if (order.deliveryFeePkr == 0L) "FREE (Rs. 0)" else formatPkr(order.deliveryFeePkr),
+                                    icon = Icons.Filled.LocalShipping,
+                                    accentColor = if (order.deliveryFeePkr == 0L) LahoriSuccess else LahoriRed,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        // 3. Step-by-Step Vertical Real-Time Milestone Timeline
                         item(key = "vertical_milestone_timeline") {
                             LiveMilestoneTimelineCard(
-                                currentStatus = status,
-                                isPickup = isPickup,
+                                summary = summary,
+                                order = order,
                                 isDark = isDark
                             )
                         }
 
-                        // 3. Branch & Fulfillment Details
+                        // 4. Branch & Fulfillment Details with Open in Google Maps action
                         item(key = "branch_fulfillment_card") {
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
@@ -292,20 +456,42 @@ fun LiveOrderTrackingScreen(
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Row(
+                                        modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Storefront,
-                                            contentDescription = null,
-                                            tint = LahoriRed,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Text(
-                                            text = "BRANCH & DELIVERY INFO",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Storefront,
+                                                contentDescription = null,
+                                                tint = LahoriRed,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Text(
+                                                text = if (summary.isPickup) "PICKUP BRANCH INFO" else "BRANCH & DELIVERY INFO",
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                        if (order.deliveryFeePkr == 0L && !summary.isPickup) {
+                                            Surface(
+                                                color = LahoriSuccess.copy(alpha = 0.14f),
+                                                shape = CircleShape
+                                            ) {
+                                                Text(
+                                                    text = "FREE DELIVERY",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 9.sp
+                                                    ),
+                                                    color = if (isDark) Color(0xFF4ADE80) else LahoriSuccess,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                                     Row(
@@ -315,13 +501,13 @@ fun LiveOrderTrackingScreen(
                                         Icon(
                                             imageVector = Icons.Filled.LocationOn,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            tint = LahoriRed,
                                             modifier = Modifier.size(18.dp)
                                         )
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                             Text(
                                                 text = "${order.orderType} • ${order.branchName}",
-                                                style = MaterialTheme.typography.titleSmall,
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
@@ -329,10 +515,51 @@ fun LiveOrderTrackingScreen(
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                            if (order.hasDeliveryLocation()) {
+                                                Text(
+                                                    text = "GPS Pin: ${order.formattedCoordinates()}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (isDark) LahoriGold else LahoriRed
+                                                )
+                                            }
                                             Text(
-                                                text = "Customer: ${order.customerName} (${order.customerPhone.ifBlank { "Verified account" }})",
+                                                text = "Recipient: ${order.customerName} (${order.customerPhone.ifBlank { "Verified account" }})",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    if (mapsUrl.isNotBlank()) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                try {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
+                                                    context.startActivity(intent)
+                                                } catch (_: Exception) {
+                                                    scope.launch {
+                                                        snackbarHostState.showSnackbar("No map app available to open location")
+                                                    }
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(1.dp, LahoriRed.copy(alpha = 0.6f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp)
+                                                .testTag("tracker_open_map_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Map,
+                                                contentDescription = null,
+                                                tint = LahoriRed,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = if (summary.isPickup) "OPEN BRANCH ON GOOGLE MAPS" else "VIEW DELIVERY LOCATION ON MAP",
+                                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                                color = if (isDark) LahoriWhite else LahoriRed
                                             )
                                         }
                                     }
@@ -340,7 +567,7 @@ fun LiveOrderTrackingScreen(
                             }
                         }
 
-                        // 4. Itemized Order Summary
+                        // 5. Itemized Order Summary
                         item(key = "order_items_receipt") {
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
@@ -353,7 +580,7 @@ fun LiveOrderTrackingScreen(
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = "ORDER SUMMARY (#${order.id.takeLast(6).uppercase()})",
+                                        text = "ORDER SUMMARY (${summary.shortOrderCode})",
                                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
@@ -438,8 +665,49 @@ fun LiveOrderTrackingScreen(
                             }
                         }
 
-                        // 5. Delivered Rating Card
-                        if (status == OrderStatus.Delivered) {
+                        // 6. Real-Time Firestore Snapshot Telemetry Footer
+                        item(key = "firestore_snapshot_telemetry") {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("firestore_snapshot_telemetry_card")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Sync,
+                                        contentDescription = null,
+                                        tint = if (snapshot.isFromCache) LahoriGold else LahoriSuccess,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (snapshot.isFromCache) {
+                                                "Showing cached snapshot — reconnecting for live updates"
+                                            } else {
+                                                "Connected to live Firestore snapshot stream"
+                                            },
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "$syncAgeText • Last branch update ${formatOrderDate(order.updatedAt ?: order.createdAt)}",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 7. Delivered Rating Card
+                        if (summary.status == OrderStatus.Delivered) {
                             item(key = "delivered_review_section") {
                                 if (existingReview != null) {
                                     Surface(
@@ -562,50 +830,74 @@ fun LiveSyncBadge(isActive: Boolean) {
 }
 
 @Composable
+private fun MetricPillCard(
+    label: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    accentColor: Color = LahoriRed
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = accentColor.copy(alpha = 0.14f),
+                modifier = Modifier.size(34.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun LiveOrderHeroCard(
     order: CafeOrder,
-    status: OrderStatus,
-    isPickup: Boolean
+    summary: OrderTrackingSummary,
+    syncAgeText: String,
+    isFromCache: Boolean
 ) {
-    val progressTarget = when (status) {
-        OrderStatus.Confirmed -> 0.25f
-        OrderStatus.Preparing -> 0.52f
-        OrderStatus.Dispatched -> 0.80f
-        OrderStatus.Delivered -> 1.0f
-    }
     val animatedProgress by animateFloatAsState(
-        targetValue = progressTarget,
+        targetValue = summary.progressFraction,
         animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
         label = "order_progress"
     )
-
-    val stageHeadline = when (status) {
-        OrderStatus.Confirmed -> "ORDER CONFIRMED"
-        OrderStatus.Preparing -> "PREPARING IN KITCHEN"
-        OrderStatus.Dispatched -> if (isPickup) "READY FOR PICKUP" else "OUT FOR DELIVERY"
-        OrderStatus.Delivered -> if (isPickup) "PICKED UP" else "DELIVERED"
-    }
-    val stageSubtitle = when (status) {
-        OrderStatus.Confirmed -> "Your order #${order.id.takeLast(6).uppercase()} is locked in at ${order.branchName}."
-        OrderStatus.Preparing -> "Our kitchen team is freshly frying & baking your Lahori favorites."
-        OrderStatus.Dispatched -> if (isPickup) {
-            "Your meal is packed hot and waiting at the branch pickup counter!"
-        } else {
-            "Your rider has left the branch and is heading toward your address!"
-        }
-        OrderStatus.Delivered -> "Enjoy your Lahori Food Cafe feast! Thank you for ordering with us."
-    }
-    val stageIcon: ImageVector = when (status) {
-        OrderStatus.Confirmed -> Icons.Filled.ReceiptLong
-        OrderStatus.Preparing -> Icons.Filled.LocalFireDepartment
-        OrderStatus.Dispatched -> if (isPickup) Icons.Filled.ShoppingBag else Icons.Filled.DeliveryDining
-        OrderStatus.Delivered -> Icons.Filled.CheckCircle
-    }
+    val stageIcon = stageIconFor(summary.status, summary.isPickup)
 
     val infiniteTransition = rememberInfiniteTransition(label = "hero_beacon")
     val iconScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
-        targetValue = if (status == OrderStatus.Delivered) 1.0f else 1.08f,
+        targetValue = if (summary.isCompleted) 1.0f else 1.08f,
         animationSpec = infiniteRepeatable(
             animation = tween(1000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -613,15 +905,16 @@ private fun LiveOrderHeroCard(
         label = "beacon_scale"
     )
 
-    val gradientColors = if (status == OrderStatus.Delivered) {
-        listOf(Color(0xFF0E4D27), Color(0xFF167B40), LahoriSuccess)
+    val gradientColors = if (summary.isCompleted) {
+        listOf(Color(0xFF0A3A1E), Color(0xFF146636), LahoriSuccess)
     } else {
-        listOf(LahoriBlack, Color(0xFF560615), LahoriRedDark, LahoriRed)
+        listOf(LahoriBlack, Color(0xFF4F0714), LahoriRedDark, LahoriRed)
     }
 
     Surface(
-        shape = RoundedCornerShape(18.dp),
-        shadowElevation = 6.dp,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.5.dp, if (summary.isCompleted) Color(0xFF4ADE80).copy(alpha = 0.6f) else LahoriGold.copy(alpha = 0.7f)),
+        shadowElevation = 8.dp,
         modifier = Modifier
             .fillMaxWidth()
             .testTag("live_order_hero_card")
@@ -632,7 +925,7 @@ private fun LiveOrderHeroCard(
                 .background(Brush.linearGradient(colors = gradientColors))
                 .padding(18.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -642,24 +935,44 @@ private fun LiveOrderHeroCard(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Surface(
-                            color = LahoriGold,
-                            shape = CircleShape
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            Surface(color = LahoriGold, shape = CircleShape) {
+                                Text(
+                                    text = "ORDER ${summary.shortOrderCode}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                                    color = LahoriBlack,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                            Surface(
+                                color = LahoriWhite.copy(alpha = 0.16f),
+                                shape = CircleShape
+                            ) {
+                                Text(
+                                    text = summary.etaLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = LahoriWhite,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        AnimatedContent(
+                            targetState = summary.stageHeadline,
+                            transitionSpec = { fadeIn(tween(280)) togetherWith fadeOut(tween(200)) },
+                            label = "hero_stage_headline"
+                        ) { headline ->
                             Text(
-                                text = "ORDER #${order.id.takeLast(6).uppercase()}",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
-                                color = LahoriBlack,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                text = headline,
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                                color = LahoriWhite
                             )
                         }
                         Text(
-                            text = stageHeadline,
-                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-                            color = LahoriWhite
-                        )
-                        Text(
-                            text = stageSubtitle,
+                            text = summary.stageSubtitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = LahoriWhite.copy(alpha = 0.88f)
                         )
@@ -670,7 +983,7 @@ private fun LiveOrderHeroCard(
                     Surface(
                         shape = CircleShape,
                         color = LahoriWhite.copy(alpha = 0.16f),
-                        border = BorderStroke(1.5.dp, LahoriWhite.copy(alpha = 0.45f)),
+                        border = BorderStroke(1.5.dp, LahoriGold.copy(alpha = 0.8f)),
                         modifier = Modifier
                             .size(64.dp)
                             .scale(iconScale)
@@ -678,14 +991,18 @@ private fun LiveOrderHeroCard(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = stageIcon,
-                                contentDescription = stageHeadline,
+                                contentDescription = summary.stageHeadline,
                                 tint = LahoriWhite,
-                                modifier = Modifier.size(34.dp)
+                                modifier = Modifier.size(32.dp)
                             )
                         }
                     }
                 }
 
+                // Custom Canvas 4-stage live progress route
+                LiveRouteProgressCanvas(summary = summary)
+
+                // Percentage bar & sync metadata
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -703,9 +1020,11 @@ private fun LiveOrderHeroCard(
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = "Updated ${formatOrderDate(order.updatedAt ?: order.createdAt)}",
+                                text = "${summary.etaSubtext} • ${if (isFromCache) "Cached" else syncAgeText}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = LahoriWhite.copy(alpha = 0.85f)
+                                color = LahoriWhite.copy(alpha = 0.88f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         Text(
@@ -722,7 +1041,7 @@ private fun LiveOrderHeroCard(
                         strokeCap = StrokeCap.Round,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(10.dp)
+                            .height(8.dp)
                             .clip(CircleShape)
                     )
                 }
@@ -733,12 +1052,20 @@ private fun LiveOrderHeroCard(
 
 @Composable
 private fun LiveMilestoneTimelineCard(
-    currentStatus: OrderStatus,
-    isPickup: Boolean,
+    summary: OrderTrackingSummary,
+    order: CafeOrder,
     isDark: Boolean
 ) {
-    val steps = OrderStatus.entries
-    val currentIndex = steps.indexOf(currentStatus)
+    val pulseTransition = rememberInfiniteTransition(label = "timeline_pulse")
+    val activeHaloScale by pulseTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.26f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(950, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "active_halo_scale"
+    )
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -752,49 +1079,41 @@ private fun LiveMilestoneTimelineCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text(
-                text = "REAL-TIME PROGRESS",
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "LIVE ORDER TIMELINE",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Placed ${formatOrderDate(order.createdAt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
 
-            steps.forEachIndexed { index, step ->
-                val isCompleted = index < currentIndex || (index == currentIndex && currentStatus == OrderStatus.Delivered)
-                val isCurrent = index == currentIndex && currentStatus != OrderStatus.Delivered
-                val reached = index <= currentIndex
+            val milestones = summary.milestones
+            val currentIndex = milestones.indexOfFirst { it.isCurrent }.let {
+                if (it >= 0) it else if (summary.isCompleted) milestones.lastIndex else 0
+            }
 
-                val title = when (step) {
-                    OrderStatus.Confirmed -> "Order Confirmed"
-                    OrderStatus.Preparing -> "Preparing in Kitchen"
-                    OrderStatus.Dispatched -> if (isPickup) "Ready for Pickup" else "Out for Delivery"
-                    OrderStatus.Delivered -> if (isPickup) "Picked Up" else "Delivered"
-                }
-                val detail = when (step) {
-                    OrderStatus.Confirmed -> "Order verified and sent to kitchen display."
-                    OrderStatus.Preparing -> "Chefs are cooking your items piping hot."
-                    OrderStatus.Dispatched -> if (isPickup) {
-                        "Packed & waiting at the branch counter."
-                    } else {
-                        "Rider picked up your order and is en route."
-                    }
-                    OrderStatus.Delivered -> if (isPickup) {
-                        "Order collected from branch."
-                    } else {
-                        "Delivered to your doorstep!"
-                    }
-                }
-                val stepIcon = when (step) {
-                    OrderStatus.Confirmed -> Icons.Filled.ReceiptLong
-                    OrderStatus.Preparing -> Icons.Filled.LocalFireDepartment
-                    OrderStatus.Dispatched -> if (isPickup) Icons.Filled.ShoppingBag else Icons.Filled.DeliveryDining
-                    OrderStatus.Delivered -> Icons.Filled.CheckCircle
+            milestones.forEachIndexed { index, milestone ->
+                val reached = milestone.isCompleted || milestone.isCurrent
+                val stepIcon = if (milestone.isCompleted && !milestone.isCurrent) {
+                    Icons.Filled.Check
+                } else {
+                    stageIconFor(milestone.status, summary.isPickup)
                 }
 
                 val circleColor by animateColorAsState(
                     targetValue = when {
-                        isCompleted -> LahoriSuccess
-                        isCurrent -> LahoriRed
+                        milestone.isCompleted -> LahoriSuccess
+                        milestone.isCurrent -> LahoriRed
                         else -> MaterialTheme.colorScheme.surfaceVariant
                     },
                     label = "step_color_$index"
@@ -805,28 +1124,39 @@ private fun LiveMilestoneTimelineCard(
                     verticalAlignment = Alignment.Top
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Surface(
-                            shape = CircleShape,
-                            color = circleColor,
-                            border = if (reached) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = stepIcon,
-                                    contentDescription = title,
-                                    tint = if (reached) LahoriWhite else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp)) {
+                            if (milestone.isCurrent) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .scale(activeHaloScale)
+                                        .clip(CircleShape)
+                                        .background(LahoriRed.copy(alpha = 0.22f))
                                 )
                             }
+                            Surface(
+                                shape = CircleShape,
+                                color = circleColor,
+                                border = if (reached) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = stepIcon,
+                                        contentDescription = milestone.title,
+                                        tint = if (reached) LahoriWhite else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                         }
-                        if (index < steps.lastIndex) {
+                        if (index < milestones.lastIndex) {
                             Box(
                                 modifier = Modifier
                                     .width(3.dp)
                                     .height(34.dp)
                                     .background(
-                                        if (index < currentIndex) LahoriSuccess
+                                        if (index < currentIndex || summary.isCompleted) LahoriSuccess
                                         else MaterialTheme.colorScheme.outline
                                     )
                             )
@@ -838,7 +1168,7 @@ private fun LiveMilestoneTimelineCard(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(top = 2.dp, bottom = if (index < steps.lastIndex) 12.dp else 0.dp)
+                            .padding(top = 4.dp, bottom = if (index < milestones.lastIndex) 12.dp else 0.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -846,40 +1176,50 @@ private fun LiveMilestoneTimelineCard(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = title,
+                                text = milestone.title,
                                 style = MaterialTheme.typography.titleSmall.copy(
                                     fontWeight = if (reached) FontWeight.ExtraBold else FontWeight.Medium
                                 ),
                                 color = if (reached) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (isCurrent) {
-                                Surface(
-                                    color = LahoriRed.copy(alpha = 0.14f),
-                                    shape = CircleShape
-                                ) {
-                                    Text(
-                                        text = "IN PROGRESS",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Black
-                                        ),
-                                        color = if (isDark) Color(0xFFFF8599) else LahoriRed,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                    )
+                            when {
+                                milestone.isCurrent -> {
+                                    Surface(
+                                        color = LahoriRed.copy(alpha = 0.14f),
+                                        shape = CircleShape
+                                    ) {
+                                        Text(
+                                            text = "IN PROGRESS",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Black
+                                            ),
+                                            color = if (isDark) Color(0xFFFF8599) else LahoriRed,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
                                 }
-                            } else if (isCompleted) {
-                                Text(
-                                    text = "DONE",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    color = if (isDark) Color(0xFF4ADE80) else LahoriSuccess
-                                )
+                                milestone.isCompleted -> {
+                                    Surface(
+                                        color = LahoriSuccess.copy(alpha = 0.14f),
+                                        shape = CircleShape
+                                    ) {
+                                        Text(
+                                            text = "DONE",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Black
+                                            ),
+                                            color = if (isDark) Color(0xFF4ADE80) else LahoriSuccess,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = detail,
+                            text = milestone.subtitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

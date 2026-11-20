@@ -16,6 +16,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -760,7 +763,8 @@ private fun AuthenticatedCafeShell(
     val isSavingBranchPromo by viewModel.isSavingBranchPromo.collectAsStateWithLifecycle()
     val isSavingBranchBanner by viewModel.isSavingBranchBanner.collectAsStateWithLifecycle()
     val branchAssignmentLoaded by viewModel.branchAssignmentLoaded.collectAsStateWithLifecycle()
-    val trackedOrderState by viewModel.trackedOrderState.collectAsStateWithLifecycle()
+    val trackedOrderSnapshotState by viewModel.trackedOrderSnapshotState.collectAsStateWithLifecycle()
+    val latestActiveOrder by viewModel.latestActiveOrder.collectAsStateWithLifecycle()
     val fcmTokenRegistered by viewModel.fcmTokenRegistered.collectAsStateWithLifecycle()
     val newBranchOrderAlert by viewModel.newBranchOrderAlert.collectAsStateWithLifecycle()
     val adminNotifications by viewModel.adminNotifications.collectAsStateWithLifecycle()
@@ -1342,14 +1346,15 @@ private fun AuthenticatedCafeShell(
         return
     }
 
-    trackedOrderState?.let { activeTrackedState ->
+    trackedOrderSnapshotState?.let { activeTrackedState ->
         LiveOrderTrackingScreen(
-            trackedOrderState = activeTrackedState,
+            trackedSnapshotState = activeTrackedState,
             allActiveOrders = activeOrdersList,
             reviewsByOrderId = reviewsByOrderId,
             onSelectTrackedOrder = { orderId -> viewModel.startTrackingOrder(orderId) },
             onRateOrder = { order -> viewModel.openOrderSurvey(order) },
             onBack = { viewModel.stopTrackingOrder() },
+            branches = branchesList,
             snackbarHostState = snackbarHostState
         )
         pendingSurveyOrder?.let { surveyOrder ->
@@ -1453,7 +1458,9 @@ private fun AuthenticatedCafeShell(
                                 }
                             }
                         }
-                    }
+                    },
+                    activeOrder = latestActiveOrder,
+                    onTrackActiveOrder = { order -> viewModel.startTrackingOrder(order.id) }
                 )
                 CafeTab.Menu -> MenuScreen(
                     menuItems = menuItems,
@@ -1549,7 +1556,13 @@ private fun AuthenticatedCafeShell(
                         color = LahoriBlack,
                         border = BorderStroke(1.5.dp, LahoriGold),
                         shadowElevation = 8.dp,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewModel.dismissStatusBanner()
+                                viewModel.startTrackingOrder(orderId)
+                            }
+                            .testTag("live_status_banner_card")
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -1564,12 +1577,26 @@ private fun AuthenticatedCafeShell(
                                     color = LahoriWhite
                                 )
                                 Text(
-                                    text = st.notificationMessageFor(orderTypeStr),
+                                    text = "${st.notificationMessageFor(orderTypeStr)} • Tap to track live",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = LahoriWhite.copy(alpha = 0.8f)
+                                    color = LahoriWhite.copy(alpha = 0.85f)
                                 )
                             }
-                            IconButton(onClick = { viewModel.dismissStatusBanner() }, modifier = Modifier.size(36.dp)) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = LahoriRed
+                            ) {
+                                Text(
+                                    text = "TRACK",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                                    color = LahoriWhite,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.dismissStatusBanner() },
+                                modifier = Modifier.size(48.dp)
+                            ) {
                                 Icon(Icons.Filled.Close, contentDescription = "Dismiss alert", tint = LahoriWhite)
                             }
                         }
