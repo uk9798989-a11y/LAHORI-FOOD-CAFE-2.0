@@ -1,4 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.security.MessageDigest
+import java.time.Instant
 
 plugins {
   alias(libs.plugins.android.application)
@@ -140,3 +142,82 @@ dependencies {
   // "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
 }
+
+abstract class PackageLahoriApkTask : org.gradle.api.DefaultTask() {
+  @get:org.gradle.api.tasks.InputFile
+  @get:org.gradle.api.tasks.PathSensitive(org.gradle.api.tasks.PathSensitivity.NONE)
+  abstract val sourceApk: org.gradle.api.file.RegularFileProperty
+
+  @get:org.gradle.api.tasks.OutputFile
+  abstract val outputApk: org.gradle.api.file.RegularFileProperty
+
+  @get:org.gradle.api.tasks.Input
+  abstract val buildVariant: org.gradle.api.provider.Property<String>
+
+  @get:org.gradle.api.tasks.Input
+  abstract val signingSummary: org.gradle.api.provider.Property<String>
+
+  @org.gradle.api.tasks.TaskAction
+  fun packageApk() {
+    val src = sourceApk.get().asFile
+    val dst = outputApk.get().asFile
+    if (!src.exists() || src.length() == 0L) {
+      throw org.gradle.api.GradleException("Expected compiled APK not found or empty: ${src.absolutePath}")
+    }
+    dst.parentFile.mkdirs()
+    src.copyTo(dst, overwrite = true)
+
+    val digest = MessageDigest.getInstance("SHA-256")
+    dst.inputStream().use { input ->
+      val buffer = ByteArray(8192)
+      var read = input.read(buffer)
+      while (read != -1) {
+        digest.update(buffer, 0, read)
+        read = input.read(buffer)
+      }
+    }
+    val sha256 = digest.digest().joinToString("") { b -> "%02x".format(b) }
+    val sizeMb = "%.2f".format(dst.length() / (1024.0 * 1024.0))
+
+    logger.lifecycle("============================================================")
+    logger.lifecycle("Lahori Food Cafe APK Ready for Deployment")
+    logger.lifecycle("Variant  : ${buildVariant.get()}")
+    logger.lifecycle("Signing  : ${signingSummary.get()}")
+    logger.lifecycle("Output   : ${dst.absolutePath}")
+    logger.lifecycle("Size     : ${dst.length()} bytes (${sizeMb} MB)")
+    logger.lifecycle("Updated  : ${Instant.ofEpochMilli(dst.lastModified())}")
+    logger.lifecycle("SHA-256  : $sha256")
+    logger.lifecycle("============================================================")
+  }
+}
+
+val envKeystorePath = providers.environmentVariable("KEYSTORE_PATH").orNull
+val envStorePassword = providers.environmentVariable("STORE_PASSWORD").orNull
+val envKeyPassword = providers.environmentVariable("KEY_PASSWORD").orNull
+val releaseKeystoreFile = file(envKeystorePath ?: "${rootDir}/my-upload-key.jks")
+val hasReleaseSigningReady =
+    releaseKeystoreFile.exists() &&
+        !envStorePassword.isNullOrBlank() &&
+        !envKeyPassword.isNullOrBlank()
+val requireReleaseKeystore =
+    providers.gradleProperty("requireReleaseKeystore").orNull.equals("true", ignoreCase = true)
+
+tasks.register<PackageLahoriApkTask>("buildLahoriReleaseApk") {
+  group = "build"
+  description =
+      "Builds the signed APK (release via signingConfigs.release when upload keystore & passwords are configured, otherwise signed with existing debug.keystore) and outputs Lahori-Food-Cafe.apk in app/build/outputs/apk/."
+
+  if (hasReleaseSigningReady || requireReleaseKeystore) {
+    dependsOn("assembleRelease")
+    sourceApk.set(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
+    buildVariant.set("release")
+    signingSummary.set("release signingConfig (${releaseKeystoreFile.name}, alias=upload)")
+  } else {
+    dependsOn("assembleDebug")
+    sourceApk.set(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+    buildVariant.set("debug-signed (fallback; set KEYSTORE_PATH/STORE_PASSWORD/KEY_PASSWORD or provide my-upload-key.jks for release upload keystore)")
+    signingSummary.set("debugConfig (existing debug.keystore, alias=androiddebugkey)")
+  }
+  outputApk.set(layout.buildDirectory.file("outputs/apk/Lahori-Food-Cafe.apk"))
+}
+
