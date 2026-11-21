@@ -14,12 +14,40 @@
         "mapUrl": { "type": "string", "description": "Official Google Maps share link for directions." },
         "openHours": { "type": "string", "description": "Daily operating hours label." },
         "deliveryRadiusKm": { "type": "integer", "description": "Maximum local delivery radius in kilometers." },
+        "deliveryFeePkr": { "type": "integer", "description": "Branch-specific delivery charge in PKR when subtotal is below the global free-delivery threshold." },
         "active": { "type": "boolean", "description": "Whether this branch is actively accepting orders." },
         "sortOrder": { "type": "integer", "description": "Display ordering priority." },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
       },
       "required": ["name", "shortLabel", "shortAddress", "areas", "active", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "DeliverySettings": {
+      "title": "DeliverySettings",
+      "description": "Global delivery configuration managed exclusively by Super Admin (e.g., Rs. 800 free-delivery minimum threshold).",
+      "type": "object",
+      "properties": {
+        "freeDeliveryMinOrderPkr": { "type": "integer", "description": "Global minimum order subtotal in PKR to unlock free delivery (default 800)." },
+        "defaultDeliveryFeePkr": { "type": "integer", "description": "Fallback delivery charge in PKR for new branches." },
+        "updatedBy": { "type": "string", "description": "Super Admin email who last updated settings." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["freeDeliveryMinOrderPkr", "updatedAt"]
+    },
+    "BranchMenuOverride": {
+      "title": "BranchMenuOverride",
+      "description": "Branch-independent price and availability override for a menu item under /branches/{branchId}/menu_overrides/{itemId}.",
+      "type": "object",
+      "properties": {
+        "itemId": { "type": "string", "description": "Referenced global menu item ID." },
+        "branchId": { "type": "string", "description": "Branch ID owning this override." },
+        "pricePkr": { "type": "integer", "description": "Branch-specific unit price in PKR." },
+        "available": { "type": "boolean", "description": "Whether this item is currently available at this branch." },
+        "sizePrices": { "type": "object", "description": "Optional per-size prices in PKR for this branch." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
+      },
+      "required": ["itemId", "branchId", "pricePkr", "available", "createdAt", "updatedAt"]
     },
     "MenuItem": {
       "title": "MenuItem",
@@ -126,7 +154,7 @@
     },
     "CafeOrder": {
       "title": "CafeOrder",
-      "description": "Customer or guest order routed to a dynamic branch with live status tracking and strict per-branch manager isolation.",
+      "description": "Customer or guest order routed to a dynamic branch with Pending -> Confirmed/Rejected approval workflow and Rs. 800 free-delivery threshold enforcement.",
       "type": "object",
       "properties": {
         "userId": { "type": "string", "description": "Firebase Auth UID of placer." },
@@ -136,20 +164,24 @@
         "customerEmail": { "type": "string", "description": "Account email." },
         "customerPhone": { "type": "string", "description": "Contact phone number." },
         "orderType": { "type": "string", "enum": ["DELIVERY", "PICKUP"], "description": "Fulfillment mode." },
-        "deliveryAddress": { "type": "string", "description": "Delivery address or Pickup counter note." },
+        "deliveryAddress": { "type": "string", "description": "Manual delivery address or Pickup counter note." },
         "deliveryLatitude": { "type": "number", "description": "Optional customer live GPS latitude attached at delivery checkout." },
         "deliveryLongitude": { "type": "number", "description": "Optional customer live GPS longitude attached at delivery checkout." },
+        "paymentMethod": { "type": "string", "description": "Payment method selected (e.g., Cash on Delivery)." },
         "branchId": { "type": "string", "description": "Assigned dynamic branch ID." },
         "branchName": { "type": "string", "description": "Assigned branch name." },
-        "branchAdminEmails": { "type": "array", "description": "Optional denormalized manager emails for reference/alerts." },
-        "items": { "type": "array", "description": "Line items ordered." },
+        "branchAdminEmails": { "type": "array", "description": "Empty on client create; reserved for server reference." },
+        "items": { "type": "array", "description": "Immutable line-item price snapshots at order time." },
         "itemsSummary": { "type": "string", "description": "Formatted item summary." },
         "promoCode": { "type": "string", "description": "Applied promo code if any." },
         "discountPkr": { "type": "integer", "description": "Discount amount in PKR." },
-        "subtotalPkr": { "type": "integer", "description": "Order subtotal in PKR." },
-        "deliveryFeePkr": { "type": "integer", "description": "Delivery fee in PKR." },
-        "totalPkr": { "type": "integer", "description": "Total order price in PKR." },
-        "status": { "type": "string", "enum": ["Confirmed", "Preparing", "Dispatched", "Delivered"], "description": "Live order status." },
+        "subtotalPkr": { "type": "integer", "description": "Order subtotal in PKR before delivery fee." },
+        "deliveryFeePkr": { "type": "integer", "description": "Rs. 0 when subtotal >= 800 (or Pickup), else selected branch deliveryFeePkr." },
+        "totalPkr": { "type": "integer", "description": "Final total in PKR (subtotal - discount + deliveryFee)." },
+        "status": { "type": "string", "enum": ["Pending", "Confirmed", "Preparing", "Ready", "OutForDelivery", "Dispatched", "Delivered", "Rejected"], "description": "Live order status." },
+        "confirmedAt": { "type": "string", "format": "date-time", "description": "Server timestamp when assigned Branch Admin confirmed the order." },
+        "rejectedAt": { "type": "string", "format": "date-time", "description": "Server timestamp when assigned Branch Admin rejected the order." },
+        "rejectionReason": { "type": "string", "description": "Optional reason provided by Branch Admin when rejecting an order." },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation." },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." }
       },
@@ -217,7 +249,7 @@
         "customerName": { "type": "string", "description": "Customer recipient name." },
         "customerPhone": { "type": "string", "description": "Customer contact phone number." },
         "deliveryAddress": { "type": "string", "description": "Complete customer delivery address." },
-        "totalPkr": { "type": "integer", "description": "Final order total in PKR (with FREE delivery Rs. 0)." },
+        "totalPkr": { "type": "integer", "description": "Final order total in PKR." },
         "orderType": { "type": "string", "enum": ["DELIVERY", "PICKUP"], "description": "Fulfillment type." },
         "itemsSummary": { "type": "string", "description": "Ordered items summary." },
         "title": { "type": "string", "description": "Notification title." },
@@ -231,9 +263,17 @@
     }
   },
   "firestore": {
+    "/app_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/DeliverySettings" },
+      "description": "Global Super Admin settings including freeDeliveryMinOrderPkr (default Rs. 800)."
+    },
     "/branches/{branchId}": {
       "schema": { "$ref": "#/entities/CafeBranch" },
-      "description": "SuperAdmin-managed restaurant branches (supports 10+ unlimited branches)."
+      "description": "SuperAdmin-managed restaurant branches with per-branch deliveryFeePkr."
+    },
+    "/branches/{branchId}/menu_overrides/{itemId}": {
+      "schema": { "$ref": "#/entities/BranchMenuOverride" },
+      "description": "Branch-independent menu item price and availability overrides managed by each branch's admin."
     },
     "/menu_items/{itemId}": {
       "schema": { "$ref": "#/entities/MenuItem" },
@@ -265,7 +305,7 @@
     },
     "/orders/{orderId}": {
       "schema": { "$ref": "#/entities/CafeOrder" },
-      "description": "Customer and guest orders routed to dynamic branches with permanent Rs. 0 FREE delivery."
+      "description": "Customer and guest orders starting in Pending status with Rs. 800 free-delivery rule."
     },
     "/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/OrderReview" },

@@ -118,6 +118,7 @@ class CafeRepository(
                             "mapUrl" to branch.mapUrl,
                             "openHours" to branch.openHours,
                             "deliveryRadiusKm" to branch.deliveryRadiusKm,
+                            "deliveryFeePkr" to branch.deliveryFeePkr,
                             "active" to branch.active,
                             "sortOrder" to branch.sortOrder,
                             "createdAt" to FieldValue.serverTimestamp(),
@@ -178,7 +179,8 @@ class CafeRepository(
         longitude: Double = 0.0,
         mapUrl: String = "",
         openHours: String = "12:00 PM - 2:00 AM",
-        deliveryRadiusKm: Long = 15L
+        deliveryRadiusKm: Long = 15L,
+        deliveryFeePkr: Long = com.example.model.DEFAULT_BRANCH_DELIVERY_FEE_PKR
     ): Result<String> {
         var docPath = "branches"
         return try {
@@ -198,6 +200,7 @@ class CafeRepository(
             val cleanMapUrl = mapUrl.trim().take(300)
             val cleanOpenHours = openHours.trim().ifBlank { "12:00 PM - 2:00 AM" }.take(60)
             val cleanRadius = deliveryRadiusKm.coerceIn(1L, 100L)
+            val cleanDeliveryFee = deliveryFeePkr.coerceIn(0L, 5000L)
 
             require(cleanName.length in 2..80) { "Branch name must be 2 to 80 characters" }
             require(cleanShortLabel.length in 2..40) { "Short label must be 2 to 40 characters" }
@@ -229,6 +232,7 @@ class CafeRepository(
                         "mapUrl" to cleanMapUrl,
                         "openHours" to cleanOpenHours,
                         "deliveryRadiusKm" to cleanRadius,
+                        "deliveryFeePkr" to cleanDeliveryFee,
                         "active" to active,
                         "sortOrder" to finalOrder,
                         "createdAt" to FieldValue.serverTimestamp(),
@@ -256,6 +260,7 @@ class CafeRepository(
                             "mapUrl" to cleanMapUrl,
                             "openHours" to cleanOpenHours,
                             "deliveryRadiusKm" to cleanRadius,
+                            "deliveryFeePkr" to cleanDeliveryFee,
                             "active" to active,
                             "sortOrder" to finalOrder,
                             "updatedAt" to FieldValue.serverTimestamp()
@@ -273,6 +278,7 @@ class CafeRepository(
                             "mapUrl" to cleanMapUrl,
                             "openHours" to cleanOpenHours,
                             "deliveryRadiusKm" to cleanRadius,
+                            "deliveryFeePkr" to cleanDeliveryFee,
                             "active" to active,
                             "sortOrder" to finalOrder,
                             "createdAt" to FieldValue.serverTimestamp(),
@@ -329,6 +335,193 @@ class CafeRepository(
                 throw e
             } catch (_: Exception) {
             }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    /** Branch Admin (own branch only) or Super Admin updates branch-specific delivery fee. */
+    suspend fun updateBranchDeliveryFee(branchId: String, deliveryFeePkr: Long): Result<Unit> {
+        val cleanId = branchId.trim()
+        val docPath = "branches/$cleanId"
+        return try {
+            requireUserId()
+            require(cleanId.isNotBlank()) { "Branch ID is required" }
+            val cleanFee = deliveryFeePkr.coerceIn(0L, 5000L)
+            db.collection("branches").document(cleanId)
+                .update(
+                    mapOf(
+                        "deliveryFeePkr" to cleanFee,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    // 0B. Global Delivery Settings (SuperAdmin writable, all signed-in readable)
+    fun observeDeliverySettings(): Flow<com.example.model.DeliverySettings> {
+        val docPath = "app_settings/delivery"
+        return db.collection("app_settings")
+            .document("delivery")
+            .snapshots()
+            .map { snapshot ->
+                if (snapshot.exists()) {
+                    snapshot.toObject(
+                        com.example.model.DeliverySettings::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ) ?: com.example.model.DeliverySettings()
+                } else {
+                    com.example.model.DeliverySettings()
+                }
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                if (auth.currentUser != null) {
+                    handleFirestoreError(firestoreError ?: error, OperationType.GET, docPath)
+                }
+                emit(com.example.model.DeliverySettings())
+            }
+    }
+
+    suspend fun saveDeliverySettings(
+        freeDeliveryMinOrderPkr: Long,
+        defaultDeliveryFeePkr: Long = com.example.model.DEFAULT_BRANCH_DELIVERY_FEE_PKR
+    ): Result<Unit> {
+        val docPath = "app_settings/delivery"
+        return try {
+            requireUserId()
+            val email = auth.currentUser?.email.orEmpty().trim().lowercase().take(120)
+            val cleanThreshold = freeDeliveryMinOrderPkr.coerceIn(0L, 100000L)
+            val cleanDefaultFee = defaultDeliveryFeePkr.coerceIn(0L, 5000L)
+            db.collection("app_settings").document("delivery")
+                .set(
+                    mapOf(
+                        "freeDeliveryMinOrderPkr" to cleanThreshold,
+                        "defaultDeliveryFeePkr" to cleanDefaultFee,
+                        "updatedBy" to email,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    // 0C. Branch-Independent Menu Price & Availability Overrides (/branches/{branchId}/menu_overrides/{itemId})
+    fun observeBranchMenuOverrides(branchId: String): Flow<List<com.example.model.BranchMenuOverride>> {
+        val cleanBranch = branchId.trim()
+        if (cleanBranch.isBlank()) return kotlinx.coroutines.flow.flowOf(emptyList())
+        val path = "branches/$cleanBranch/menu_overrides"
+        return db.collection("branches")
+            .document(cleanBranch)
+            .collection("menu_overrides")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(
+                    com.example.model.BranchMenuOverride::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                if (auth.currentUser != null) {
+                    handleFirestoreError(firestoreError ?: error, OperationType.LIST, path)
+                }
+                emit(emptyList())
+            }
+    }
+
+    suspend fun saveBranchMenuOverride(
+        branchId: String,
+        itemId: String,
+        pricePkr: Long,
+        available: Boolean,
+        sizePrices: Map<String, Long> = emptyMap()
+    ): Result<Unit> {
+        val cleanBranch = branchId.trim()
+        val cleanItem = itemId.trim()
+        val docPath = "branches/$cleanBranch/menu_overrides/$cleanItem"
+        return try {
+            requireUserId()
+            require(cleanBranch.isNotBlank() && cleanItem.isNotBlank()) { "Branch ID and Item ID are required" }
+            require(pricePkr in 1L..100000L) { "Price must be between Rs. 1 and Rs. 100,000" }
+            val docRef = db.collection("branches")
+                .document(cleanBranch)
+                .collection("menu_overrides")
+                .document(cleanItem)
+            val existingSnap = docRef.get().await()
+            val cleanSizes = sizePrices
+                .filter { (k, v) -> k.isNotBlank() && v in 1L..100000L }
+                .entries.take(12)
+                .associate { it.key.trim().take(24) to it.value }
+
+            if (existingSnap.exists()) {
+                val updateMap = mutableMapOf<String, Any>(
+                    "pricePkr" to pricePkr,
+                    "available" to available,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (cleanSizes.isNotEmpty()) {
+                    updateMap["sizePrices"] = cleanSizes
+                }
+                docRef.update(updateMap).await()
+            } else {
+                val createMap = mutableMapOf<String, Any>(
+                    "itemId" to cleanItem,
+                    "branchId" to cleanBranch,
+                    "pricePkr" to pricePkr,
+                    "available" to available,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (cleanSizes.isNotEmpty()) {
+                    createMap["sizePrices"] = cleanSizes
+                }
+                docRef.set(createMap).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteBranchMenuOverride(branchId: String, itemId: String): Result<Unit> {
+        val cleanBranch = branchId.trim()
+        val cleanItem = itemId.trim()
+        val docPath = "branches/$cleanBranch/menu_overrides/$cleanItem"
+        return try {
+            requireUserId()
+            db.collection("branches")
+                .document(cleanBranch)
+                .collection("menu_overrides")
+                .document(cleanItem)
+                .delete()
+                .await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1145,7 +1338,8 @@ class CafeRepository(
         promoCode: String = "",
         discountPkr: Long = 0L,
         deliveryLatitude: Double = 0.0,
-        deliveryLongitude: Double = 0.0
+        deliveryLongitude: Double = 0.0,
+        paymentMethod: String = com.example.model.DEFAULT_PAYMENT_METHOD
     ): Result<String> {
         var docPath = "orders"
         return try {
@@ -1156,7 +1350,40 @@ class CafeRepository(
             val cleanPhone = customerPhone.trim().take(30)
             val cleanAddress = deliveryAddress.trim().take(350)
             val cleanPromo = promoCode.trim().uppercase().take(30)
+            val cleanPayment = paymentMethod.trim().ifBlank {
+                if (orderType == OrderType.PICKUP) "Pay at Counter" else com.example.model.DEFAULT_PAYMENT_METHOD
+            }.take(40)
             val branch = resolveBranch(branchId)
+
+            // Fetch authoritative global free-delivery threshold (default Rs. 800) & branch overrides from Firestore
+            val deliverySettings = try {
+                val snap = db.collection("app_settings").document("delivery").get().await()
+                if (snap.exists()) {
+                    snap.toObject(
+                        com.example.model.DeliverySettings::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ) ?: com.example.model.DeliverySettings()
+                } else {
+                    com.example.model.DeliverySettings()
+                }
+            } catch (_: Exception) {
+                com.example.model.DeliverySettings()
+            }
+
+            val branchOverridesByItemId = try {
+                db.collection("branches")
+                    .document(branch.id)
+                    .collection("menu_overrides")
+                    .get()
+                    .await()
+                    .toObjects(
+                        com.example.model.BranchMenuOverride::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    .associateBy { it.itemId.ifBlank { it.id } }
+            } catch (_: Exception) {
+                emptyMap()
+            }
 
             val hasValidCoords = orderType == OrderType.DELIVERY &&
                 (deliveryLatitude != 0.0 || deliveryLongitude != 0.0) &&
@@ -1165,20 +1392,33 @@ class CafeRepository(
             val cleanLat = if (hasValidCoords) deliveryLatitude else 0.0
             val cleanLng = if (hasValidCoords) deliveryLongitude else 0.0
 
+            // Build immutable order line item snapshots using authoritative branch override prices
             val lineItems = cartItems.take(30).map { cart ->
+                val override = branchOverridesByItemId[cart.menuItem.id]
+                if (override != null && !override.available) {
+                    throw IllegalStateException("${cart.menuItem.name} is currently unavailable at ${branch.displayShortLabel()}.")
+                }
+                val authoritativeUnitPrice = when {
+                    override != null && override.pricePkr > 0L -> override.pricePkr
+                    else -> cart.menuItem.pricePkr.coerceAtLeast(1L)
+                }
+                val qty = cart.quantity.toLong().coerceAtLeast(1L)
                 OrderLineItem(
                     itemId = cart.menuItem.id,
                     name = cart.menuItem.name,
-                    quantity = cart.quantity.toLong(),
-                    unitPricePkr = cart.menuItem.pricePkr,
-                    lineTotalPkr = cart.lineTotalPkr
+                    quantity = qty,
+                    unitPricePkr = authoritativeUnitPrice,
+                    lineTotalPkr = authoritativeUnitPrice * qty
                 )
             }
             val subtotal = lineItems.sumOf { it.lineTotalPkr }.coerceAtLeast(1L)
-            // FREE DELIVERY permanently: Rs. 0 for every customer and every order
-            val deliveryFee = 0L
-            val appliedDiscount = discountPkr.coerceIn(0L, subtotal)
-            val total = (subtotal - appliedDiscount).coerceAtLeast(1L)
+            val pricing = com.example.model.OrderPricingEngine.calculate(
+                subtotalPkr = subtotal,
+                discountPkr = discountPkr,
+                orderType = orderType,
+                branchDeliveryFeePkr = branch.deliveryFeePkr,
+                freeDeliveryMinOrderPkr = deliverySettings.freeDeliveryMinOrderPkr
+            )
             val summary = lineItems.joinToString(", ") { "${it.quantity}x ${it.name}" }.take(300)
 
             val docRef = db.collection("orders").document()
@@ -1194,17 +1434,19 @@ class CafeRepository(
                 "deliveryAddress" to cleanAddress,
                 "deliveryLatitude" to cleanLat,
                 "deliveryLongitude" to cleanLng,
+                "paymentMethod" to cleanPayment,
                 "branchId" to branch.id,
                 "branchName" to branch.name,
                 "branchAdminEmails" to emptyList<String>(),
                 "items" to lineItems.map { it.toMap() },
                 "itemsSummary" to summary,
                 "promoCode" to cleanPromo,
-                "discountPkr" to appliedDiscount,
-                "subtotalPkr" to subtotal,
-                "deliveryFeePkr" to deliveryFee,
-                "totalPkr" to total,
-                "status" to OrderStatus.Confirmed.name,
+                "discountPkr" to pricing.discountPkr,
+                "subtotalPkr" to pricing.subtotalPkr,
+                "deliveryFeePkr" to pricing.deliveryFeePkr,
+                "totalPkr" to pricing.finalTotalPkr,
+                "status" to OrderStatus.Pending.name,
+                "rejectionReason" to "",
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -1218,7 +1460,59 @@ class CafeRepository(
         }
     }
 
+    /** Assigned Branch Admin accepts a Pending order -> Confirmed + confirmedAt timestamp. */
+    suspend fun acceptOrder(orderId: String): Result<Unit> {
+        val docPath = "orders/$orderId"
+        return try {
+            requireUserId()
+            require(orderId.isNotBlank()) { "Order ID required" }
+            db.collection("orders").document(orderId).update(
+                mapOf(
+                    "status" to OrderStatus.Confirmed.name,
+                    "confirmedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    /** Assigned Branch Admin rejects a Pending order -> Rejected + rejectedAt + optional rejectionReason. */
+    suspend fun rejectOrder(orderId: String, rejectionReason: String = ""): Result<Unit> {
+        val docPath = "orders/$orderId"
+        return try {
+            requireUserId()
+            require(orderId.isNotBlank()) { "Order ID required" }
+            val cleanReason = rejectionReason.trim().take(240)
+            db.collection("orders").document(orderId).update(
+                mapOf(
+                    "status" to OrderStatus.Rejected.name,
+                    "rejectedAt" to FieldValue.serverTimestamp(),
+                    "rejectionReason" to cleanReason,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
     suspend fun updateOrderStatus(orderId: String, newStatus: OrderStatus): Result<Unit> {
+        if (newStatus == OrderStatus.Confirmed) {
+            return acceptOrder(orderId)
+        }
+        if (newStatus == OrderStatus.Rejected) {
+            return rejectOrder(orderId, "")
+        }
         val docPath = "orders/$orderId"
         return try {
             requireUserId()
@@ -1259,14 +1553,14 @@ class CafeRepository(
                             "customerName" to existingOrder.customerName.ifBlank { "Customer" }.take(80),
                             "customerPhone" to existingOrder.customerPhone.take(30),
                             "deliveryAddress" to existingOrder.deliveryAddress.take(350),
-                            "totalPkr" to existingOrder.totalPkr.coerceAtLeast(1L),
+                            "totalPkr" to existingOrder.totalPkr.coerceAtLeast(0L),
                             "orderType" to if (existingOrder.orderType.equals(OrderType.PICKUP.name, ignoreCase = true)) {
                                 OrderType.PICKUP.name
                             } else {
                                 OrderType.DELIVERY.name
                             },
                             "itemsSummary" to existingOrder.itemsSummary.ifBlank { "Order items" }.take(300),
-                            "title" to "🎉 Order Successfully Delivered!",
+                            "title" to "Order Successfully Delivered!",
                             "message" to "The order has been successfully delivered to the customer.",
                             "read" to false,
                             "deliveredAt" to FieldValue.serverTimestamp(),

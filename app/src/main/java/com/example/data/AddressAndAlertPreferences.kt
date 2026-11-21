@@ -94,4 +94,47 @@ object AddressAndAlertPreferences {
             prefs[KEY_ADMIN_DELIVERY_SOUND] = enabled
         }
     }
+
+    private const val ROLE_SESSION_PREFS = "lahori_active_role_session_prefs"
+    private const val KEY_ACTIVE_ROLE = "active_role"
+    private const val KEY_ACTIVE_BRANCH_ID = "active_branch_id"
+    private const val KEY_ACTIVE_EMAIL = "active_email"
+
+    /**
+     * Synchronously stores the currently signed-in user's role & assigned branchId so
+     * [com.example.notifications.LahoriFirebaseMessagingService] can strictly filter
+     * incoming FCM pushes (ensuring SuperAdmin NEVER receives new-order alerts and
+     * BranchAdmin ONLY receives alerts for their assigned branch) even when the app is closed.
+     */
+    fun saveActiveRoleSession(
+        context: Context,
+        role: com.example.model.UserRole,
+        assignedBranchId: String,
+        email: String
+    ) {
+        context.applicationContext
+            .getSharedPreferences(ROLE_SESSION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_ACTIVE_ROLE, role.name)
+            .putString(KEY_ACTIVE_BRANCH_ID, assignedBranchId.trim())
+            .putString(KEY_ACTIVE_EMAIL, email.trim().lowercase())
+            .apply()
+    }
+
+    fun clearActiveRoleSession(context: Context) {
+        context.applicationContext
+            .getSharedPreferences(ROLE_SESSION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
+    fun readActiveRoleSession(context: Context): Triple<com.example.model.UserRole, String, String> {
+        val prefs = context.applicationContext
+            .getSharedPreferences(ROLE_SESSION_PREFS, Context.MODE_PRIVATE)
+        val role = com.example.model.UserRole.fromString(prefs.getString(KEY_ACTIVE_ROLE, null))
+        val branchId = prefs.getString(KEY_ACTIVE_BRANCH_ID, "").orEmpty().trim()
+        val email = prefs.getString(KEY_ACTIVE_EMAIL, "").orEmpty().trim().lowercase()
+        return Triple(role, branchId, email)
+    }
 }

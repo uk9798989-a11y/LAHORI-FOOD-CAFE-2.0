@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.AddBusiness
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -103,9 +104,12 @@ import com.example.model.AdminDeliveryNotification
 import com.example.model.BranchAdminEntry
 import com.example.model.BranchBanner
 import com.example.model.BranchDirectory
+import com.example.model.BranchMenuOverride
 import com.example.model.CafeBranch
 import com.example.model.CafeFeedback
 import com.example.model.CafeOrder
+import com.example.model.DEFAULT_BRANCH_DELIVERY_FEE_PKR
+import com.example.model.DeliverySettings
 import com.example.model.MenuItem
 import com.example.model.OrderReview
 import com.example.model.OrderStatus
@@ -169,6 +173,13 @@ fun SuperAdminDashboardScreen(
     isSavingMenuItem: Boolean = false,
     branches: List<CafeBranch> = BranchDirectory.defaultBranches,
     isSavingBranch: Boolean = false,
+    deliverySettings: DeliverySettings = DeliverySettings(),
+    isSavingDeliverySettings: Boolean = false,
+    onSaveDeliverySettings: (
+        freeDeliveryMinOrderPkr: Long,
+        defaultDeliveryFeePkr: Long,
+        onDone: () -> Unit
+    ) -> Unit = { _, _, done -> done() },
     onSaveBranch: (
         branchId: String?,
         name: String,
@@ -181,8 +192,9 @@ fun SuperAdminDashboardScreen(
         longitude: Double,
         mapUrl: String,
         openHours: String,
+        deliveryFeePkr: Long,
         onDone: (String) -> Unit
-    ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _, _ -> },
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _, _, _ -> },
     onDeleteBranch: (String) -> Unit = {},
     onSeedBranches: () -> Unit = {},
     newOrderAlert: CafeOrder? = null,
@@ -233,11 +245,19 @@ fun SuperAdminDashboardScreen(
                                 color = LahoriWhite.copy(alpha = 0.75f)
                             )
                         }
-                        AdminLiveAlertStatusPill(
-                            notificationsEnabled = notificationsEnabled,
-                            liveAlertsActive = liveAlertsActive,
-                            onClick = onRequestEnableAlerts
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = LahoriGold.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, LahoriGold.copy(alpha = 0.6f)),
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            Text(
+                                text = "CENTRAL VIEW",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                color = LahoriGold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
                     }
 
                     ScrollableTabRow(
@@ -365,12 +385,6 @@ fun SuperAdminDashboardScreen(
                                 contentPadding = PaddingValues(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                item(key = "super_new_order_alert") {
-                                    IncomingOrderAlertBanner(
-                                        incoming = newOrderAlert,
-                                        onDismiss = onDismissNewOrderAlert
-                                    )
-                                }
                                 item(key = "branch_filter_chips") {
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         item(key = "filter_ALL") {
@@ -410,6 +424,7 @@ fun SuperAdminDashboardScreen(
                                     items(filteredOrders, key = { it.id }) { order ->
                                         AdminOrderControlCard(
                                             order = order,
+                                            isBranchAdminView = false,
                                             onChangeStatus = { status -> onUpdateOrderStatus(order.id, status) },
                                             onViewDetails = { inspectedOrderDetail = order to null }
                                         )
@@ -425,6 +440,9 @@ fun SuperAdminDashboardScreen(
                         branches = branches,
                         branchAdmins = branchAdmins,
                         isSavingBranch = isSavingBranch,
+                        deliverySettings = deliverySettings,
+                        isSavingDeliverySettings = isSavingDeliverySettings,
+                        onSaveDeliverySettings = onSaveDeliverySettings,
                         onSaveBranch = onSaveBranch,
                         onDeleteBranch = onDeleteBranch,
                         onSeedBranches = onSeedBranches
@@ -1045,6 +1063,9 @@ private fun BranchManagementTab(
     branches: List<CafeBranch>,
     branchAdmins: List<BranchAdminEntry>,
     isSavingBranch: Boolean,
+    deliverySettings: DeliverySettings,
+    isSavingDeliverySettings: Boolean,
+    onSaveDeliverySettings: (Long, Long, () -> Unit) -> Unit,
     onSaveBranch: (
         branchId: String?,
         name: String,
@@ -1057,6 +1078,7 @@ private fun BranchManagementTab(
         longitude: Double,
         mapUrl: String,
         openHours: String,
+        deliveryFeePkr: Long,
         onDone: (String) -> Unit
     ) -> Unit,
     onDeleteBranch: (String) -> Unit,
@@ -1068,6 +1090,7 @@ private fun BranchManagementTab(
     var shortAddress by remember { mutableStateOf("") }
     var areasInput by remember { mutableStateOf("") }
     var openHoursInput by remember { mutableStateOf("12:00 PM - 2:00 AM") }
+    var deliveryFeeInput by remember { mutableStateOf(DEFAULT_BRANCH_DELIVERY_FEE_PKR.toString()) }
     var mapUrlInput by remember { mutableStateOf("") }
     var latInput by remember { mutableStateOf("") }
     var lngInput by remember { mutableStateOf("") }
@@ -1083,6 +1106,7 @@ private fun BranchManagementTab(
         shortAddress = ""
         areasInput = ""
         openHoursInput = "12:00 PM - 2:00 AM"
+        deliveryFeeInput = deliverySettings.defaultDeliveryFeePkr.toString()
         mapUrlInput = ""
         latInput = ""
         lngInput = ""
@@ -1094,6 +1118,13 @@ private fun BranchManagementTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item(key = "global_delivery_settings_card") {
+            SuperAdminDeliverySettingsCard(
+                deliverySettings = deliverySettings,
+                isSaving = isSavingDeliverySettings,
+                onSave = onSaveDeliverySettings
+            )
+        }
         item(key = "branch_form_card") {
             Surface(
                 shape = RoundedCornerShape(16.dp),
@@ -1185,14 +1216,27 @@ private fun BranchManagementTab(
                             .testTag("branch_areas_input")
                     )
 
-                    OutlinedTextField(
-                        value = openHoursInput,
-                        onValueChange = { openHoursInput = it; validationError = null; savedBanner = null },
-                        label = { Text("Operating Hours") },
-                        placeholder = { Text("e.g. 12:00 PM - 2:00 AM") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = openHoursInput,
+                            onValueChange = { openHoursInput = it; validationError = null; savedBanner = null },
+                            label = { Text("Operating Hours") },
+                            placeholder = { Text("12:00 PM - 2:00 AM") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.2f)
+                        )
+                        OutlinedTextField(
+                            value = deliveryFeeInput,
+                            onValueChange = { deliveryFeeInput = it.filter { ch -> ch.isDigit() }; validationError = null; savedBanner = null },
+                            label = { Text("Delivery Fee (PKR)") },
+                            placeholder = { Text("150") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .weight(0.8f)
+                                .testTag("branch_delivery_fee_super_input")
+                        )
+                    }
 
                     OutlinedTextField(
                         value = mapUrlInput,
@@ -1288,12 +1332,14 @@ private fun BranchManagementTab(
                                 val parsedLat = latInput.trim().toDoubleOrNull() ?: 0.0
                                 val parsedLng = lngInput.trim().toDoubleOrNull() ?: 0.0
                                 val cleanHours = openHoursInput.trim().ifBlank { "12:00 PM - 2:00 AM" }
+                                val parsedFee = deliveryFeeInput.trim().toLongOrNull() ?: deliverySettings.defaultDeliveryFeePkr
                                 val cleanMapUrl = mapUrlInput.trim()
 
                                 when {
                                     cleanName.length < 2 -> validationError = "Enter a branch name (at least 2 characters)."
                                     cleanLabel.length < 2 -> validationError = "Enter a short branch label (at least 2 characters)."
                                     cleanAddress.length < 3 -> validationError = "Enter a full branch address."
+                                    parsedFee < 0L || parsedFee > 10_000L -> validationError = "Delivery fee must be between 0 and 10,000 PKR."
                                     else -> {
                                         validationError = null
                                         val isUpdate = editingBranchId != null
@@ -1309,7 +1355,8 @@ private fun BranchManagementTab(
                                             parsedLat,
                                             parsedLng,
                                             cleanMapUrl,
-                                            cleanHours
+                                            cleanHours,
+                                            parsedFee
                                         ) { savedId ->
                                             resetForm()
                                             savedBanner = if (isUpdate) {
@@ -1437,6 +1484,7 @@ private fun BranchManagementTab(
                                     shortAddress = branch.shortAddress
                                     areasInput = branch.areas.joinToString(", ")
                                     openHoursInput = branch.openHours.ifBlank { "12:00 PM - 2:00 AM" }
+                                    deliveryFeeInput = branch.deliveryFeePkr.toString()
                                     mapUrlInput = branch.mapUrl
                                     latInput = if (branch.latitude != 0.0) branch.latitude.toString() else ""
                                     lngInput = if (branch.longitude != 0.0) branch.longitude.toString() else ""
@@ -1467,6 +1515,11 @@ private fun BranchManagementTab(
                         text = branch.shortAddress,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Delivery Fee: ${formatPkr(branch.deliveryFeePkr)} (FREE on orders >= ${formatPkr(deliverySettings.freeDeliveryMinOrderPkr)})",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = LahoriSuccess
                     )
                     if (branch.areas.isNotEmpty()) {
                         Text(
@@ -1856,12 +1909,24 @@ fun BranchAdminDashboardScreen(
     branchName: String,
     ordersState: UiState<List<CafeOrder>>,
     onUpdateOrderStatus: (orderId: String, newStatus: OrderStatus) -> Unit,
+    onAcceptOrder: (orderId: String) -> Unit = { id -> onUpdateOrderStatus(id, OrderStatus.Confirmed) },
+    onRejectOrder: (orderId: String, reason: String) -> Unit = { id, _ -> onUpdateOrderStatus(id, OrderStatus.Rejected) },
     onBack: () -> Unit = {},
     managerEmail: String = "",
     onSignOut: (() -> Unit)? = null,
     branches: List<CafeBranch> = BranchDirectory.defaultBranches,
+    globalMenuItems: List<MenuItem> = emptyList(),
+    branchOverrides: List<BranchMenuOverride> = emptyList(),
+    deliverySettings: DeliverySettings = DeliverySettings(),
+    isSavingBranchMenuOverride: Boolean = false,
+    isSavingDeliverySettings: Boolean = false,
+    onSaveBranchMenuOverride: (itemId: String, pricePkr: Long, available: Boolean, onDone: () -> Unit) -> Unit = { _, _, _, done -> done() },
+    onResetBranchMenuOverride: (itemId: String, onDone: () -> Unit) -> Unit = { _, done -> done() },
+    onUpdateBranchDeliveryFee: (Long, onDone: () -> Unit) -> Unit = { _, done -> done() },
     newOrderAlert: CafeOrder? = null,
     onDismissNewOrderAlert: () -> Unit = {},
+    newOrderPopupQueue: List<CafeOrder> = emptyList(),
+    onDismissNewOrderPopup: () -> Unit = {},
     branchPromotions: List<Promotion> = emptyList(),
     branchBanners: List<BranchBanner> = emptyList(),
     isSavingBranchPromo: Boolean = false,
@@ -1918,6 +1983,12 @@ fun BranchAdminDashboardScreen(
     val branchLabel = remember(branchId, branches, branchName) {
         BranchDirectory.shortPickerLabel(branchId, branches)
             .ifBlank { branchName.substringAfter("— ").trim().ifBlank { branchId } }
+    }
+    val currentBranchDeliveryFee = remember(branchId, branches, deliverySettings) {
+        branches.firstOrNull { it.id == branchId }?.deliveryFeePkr ?: deliverySettings.defaultDeliveryFeePkr
+    }
+    val pendingBadgeCount = remember(allOrdersList) {
+        allOrdersList.count { OrderStatus.fromString(it.status) == OrderStatus.Pending }
     }
     val livePromoCount = remember(branchPromotions, branchBanners, branchId) {
         val now = System.currentTimeMillis()
@@ -1979,7 +2050,7 @@ fun BranchAdminDashboardScreen(
                             )
                             if (managerEmail.isNotBlank()) {
                                 Text(
-                                    text = "$managerEmail • Branch Orders & Promos",
+                                    text = "$managerEmail • Orders, Menu & Promos",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = LahoriWhite.copy(alpha = 0.72f)
                                 )
@@ -2010,10 +2081,11 @@ fun BranchAdminDashboardScreen(
                         }
                     }
 
-                    TabRow(
+                    ScrollableTabRow(
                         selectedTabIndex = selectedTab,
                         containerColor = LahoriBlack,
                         contentColor = LahoriWhite,
+                        edgePadding = 8.dp,
                         indicator = { tabPositions ->
                             if (selectedTab < tabPositions.size) {
                                 TabRowDefaults.SecondaryIndicator(
@@ -2045,10 +2117,10 @@ fun BranchAdminDashboardScreen(
                                         color = if (selectedTab == 0) LahoriWhite else LahoriWhite.copy(alpha = 0.7f),
                                         maxLines = 1
                                     )
-                                    if (unreadNotificationCount > 0) {
+                                    if (pendingBadgeCount > 0) {
                                         Surface(color = LahoriRed, shape = CircleShape) {
                                             Text(
-                                                text = "$unreadNotificationCount",
+                                                text = "$pendingBadgeCount",
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Black,
                                                 color = LahoriWhite,
@@ -2062,20 +2134,20 @@ fun BranchAdminDashboardScreen(
                         Tab(
                             selected = selectedTab == 1,
                             onClick = { selectedTab = 1 },
-                            modifier = Modifier.testTag("branch_admin_tab_promos"),
+                            modifier = Modifier.testTag("branch_admin_tab_menu"),
                             text = {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Filled.LocalOffer,
+                                        imageVector = Icons.Filled.RestaurantMenu,
                                         contentDescription = null,
                                         modifier = Modifier.size(15.dp),
                                         tint = if (selectedTab == 1) LahoriGold else LahoriWhite.copy(alpha = 0.7f)
                                     )
                                     Text(
-                                        text = if (livePromoCount > 0) "PROMOS ($livePromoCount)" else "PROMOS",
+                                        text = "MENU & PRICES",
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                         color = if (selectedTab == 1) LahoriWhite else LahoriWhite.copy(alpha = 0.7f),
                                         maxLines = 1
@@ -2086,6 +2158,30 @@ fun BranchAdminDashboardScreen(
                         Tab(
                             selected = selectedTab == 2,
                             onClick = { selectedTab = 2 },
+                            modifier = Modifier.testTag("branch_admin_tab_promos"),
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LocalOffer,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                        tint = if (selectedTab == 2) LahoriGold else LahoriWhite.copy(alpha = 0.7f)
+                                    )
+                                    Text(
+                                        text = if (livePromoCount > 0) "PROMOS ($livePromoCount)" else "PROMOS",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = if (selectedTab == 2) LahoriWhite else LahoriWhite.copy(alpha = 0.7f),
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        )
+                        Tab(
+                            selected = selectedTab == 3,
+                            onClick = { selectedTab = 3 },
                             modifier = Modifier.testTag("branch_admin_tab_notifications"),
                             text = {
                                 Row(
@@ -2096,12 +2192,12 @@ fun BranchAdminDashboardScreen(
                                         imageVector = Icons.Filled.NotificationsActive,
                                         contentDescription = null,
                                         modifier = Modifier.size(15.dp),
-                                        tint = if (selectedTab == 2) LahoriGold else LahoriWhite.copy(alpha = 0.7f)
+                                        tint = if (selectedTab == 3) LahoriGold else LahoriWhite.copy(alpha = 0.7f)
                                     )
                                     Text(
                                         text = "ALERTS",
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = if (selectedTab == 2) LahoriWhite else LahoriWhite.copy(alpha = 0.7f),
+                                        color = if (selectedTab == 3) LahoriWhite else LahoriWhite.copy(alpha = 0.7f),
                                         maxLines = 1
                                     )
                                     if (unreadNotificationCount > 0) {
@@ -2130,6 +2226,21 @@ fun BranchAdminDashboardScreen(
                 .navigationBarsPadding()
         ) {
             if (selectedTab == 1) {
+                BranchMenuPriceManagerTab(
+                    branchId = branchId,
+                    branchName = branchName,
+                    branchLabel = branchLabel,
+                    currentDeliveryFeePkr = currentBranchDeliveryFee,
+                    freeDeliveryMinOrderPkr = deliverySettings.freeDeliveryMinOrderPkr,
+                    globalMenuItems = globalMenuItems,
+                    branchOverrides = branchOverrides,
+                    isSavingDeliveryFee = isSavingDeliverySettings,
+                    isSavingOverride = isSavingBranchMenuOverride,
+                    onUpdateBranchDeliveryFee = onUpdateBranchDeliveryFee,
+                    onSaveBranchOverride = onSaveBranchMenuOverride,
+                    onResetBranchOverride = onResetBranchMenuOverride
+                )
+            } else if (selectedTab == 2) {
                 BranchPromoManagerTab(
                     branchId = branchId,
                     branchName = branchName,
@@ -2143,7 +2254,7 @@ fun BranchAdminDashboardScreen(
                     onSaveBranchBanner = onSaveBranchBanner,
                     onDeleteBranchBanner = onDeleteBranchBanner
                 )
-            } else if (selectedTab == 2) {
+            } else if (selectedTab == 3) {
                 AdminNotificationsHistoryTab(
                     notifications = adminNotifications,
                     soundEnabled = soundEnabled,
@@ -2164,16 +2275,39 @@ fun BranchAdminDashboardScreen(
                 }
                 is UiState.Success -> {
                     val allBranchOrders = ordersState.data
-                    val activeCount = remember(allBranchOrders) {
-                        allBranchOrders.count { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
+                    val pendingCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Pending }
                     }
-                    val completedCount = remember(allBranchOrders) {
+                    val confirmedCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Confirmed }
+                    }
+                    val preparingCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Preparing }
+                    }
+                    val readyCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Ready }
+                    }
+                    val outForDeliveryCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.OutForDelivery }
+                    }
+                    val deliveredCount = remember(allBranchOrders) {
                         allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Delivered }
+                    }
+                    val rejectedCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status) == OrderStatus.Rejected }
+                    }
+                    val activeCount = remember(allBranchOrders) {
+                        allBranchOrders.count { OrderStatus.fromString(it.status).isActive }
                     }
                     val visibleOrders = remember(allBranchOrders, orderFilter) {
                         when (orderFilter) {
-                            "ACTIVE" -> allBranchOrders.filter { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
-                            "COMPLETED" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Delivered }
+                            "PENDING" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Pending }
+                            "CONFIRMED" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Confirmed }
+                            "PREPARING" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Preparing }
+                            "READY" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Ready }
+                            "OUT_FOR_DELIVERY" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.OutForDelivery }
+                            "DELIVERED" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Delivered }
+                            "REJECTED" -> allBranchOrders.filter { OrderStatus.fromString(it.status) == OrderStatus.Rejected }
                             else -> allBranchOrders
                         }
                     }
@@ -2217,7 +2351,7 @@ fun BranchAdminDashboardScreen(
                                                 color = LahoriGold
                                             )
                                             Text(
-                                                text = "Tap to receive instant order alerts with sound even when the app is closed or minimized.",
+                                                text = "Tap to receive instant $branchLabel order alerts with sound even when the app is closed or minimized.",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = LahoriWhite.copy(alpha = 0.85f)
                                             )
@@ -2243,7 +2377,7 @@ fun BranchAdminDashboardScreen(
                                             modifier = Modifier.size(18.dp)
                                         )
                                         Text(
-                                            text = "Background Push & Sound Alerts Active (outside app)",
+                                            text = "Live $branchLabel Push & Sound Alerts Active",
                                             style = MaterialTheme.typography.labelMedium,
                                             color = LahoriSuccess
                                         )
@@ -2274,38 +2408,48 @@ fun BranchAdminDashboardScreen(
                                                 color = LahoriRed
                                             )
                                             Text(
-                                                text = "Restricted staff view: incoming orders for your branch only.",
+                                                text = if (pendingCount > 0) {
+                                                    "$pendingCount new order${if (pendingCount == 1) "" else "s"} waiting for your confirmation."
+                                                } else {
+                                                    "Branch-isolated queue: orders for $branchName only."
+                                                },
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
-                                            color = LahoriRed
+                                            color = if (pendingCount > 0) LahoriRed else LahoriBlack
                                         ) {
                                             Text(
-                                                text = "$activeCount LIVE",
+                                                text = if (pendingCount > 0) "$pendingCount NEW" else "$activeCount ACTIVE",
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = LahoriWhite,
+                                                color = if (pendingCount > 0) LahoriWhite else LahoriGold,
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                             )
                                         }
                                     }
                                 }
 
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf(
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val chips = listOf(
                                         "ALL" to "All (${allBranchOrders.size})",
-                                        "ACTIVE" to "Active ($activeCount)",
-                                        "COMPLETED" to "Completed ($completedCount)"
-                                    ).forEach { (key, label) ->
+                                        "PENDING" to "New / Pending ($pendingCount)",
+                                        "CONFIRMED" to "Confirmed ($confirmedCount)",
+                                        "PREPARING" to "Preparing ($preparingCount)",
+                                        "READY" to "Ready ($readyCount)",
+                                        "OUT_FOR_DELIVERY" to "Out for Delivery ($outForDeliveryCount)",
+                                        "DELIVERED" to "Delivered ($deliveredCount)",
+                                        "REJECTED" to "Rejected ($rejectedCount)"
+                                    )
+                                    items(chips, key = { it.first }) { (key, label) ->
                                         FilterChip(
                                             selected = orderFilter == key,
                                             onClick = { orderFilter = key },
-                                            label = { Text(label, fontSize = 12.sp) },
+                                            label = { Text(label, fontSize = 11.sp) },
                                             colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = LahoriRed,
-                                                selectedLabelColor = LahoriWhite
+                                                selectedContainerColor = if (key == "PENDING") LahoriRed else LahoriBlack,
+                                                selectedLabelColor = if (key == "PENDING") LahoriWhite else LahoriGold
                                             ),
                                             modifier = Modifier.testTag("branch_orders_filter_${key.lowercase()}")
                                         )
@@ -2336,7 +2480,7 @@ fun BranchAdminDashboardScreen(
                                             modifier = Modifier.size(32.dp)
                                         )
                                         Text(
-                                            text = "No incoming orders for $branchLabel",
+                                            text = "No orders in this filter for $branchLabel",
                                             style = MaterialTheme.typography.titleSmall,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
@@ -2352,6 +2496,9 @@ fun BranchAdminDashboardScreen(
                             items(visibleOrders, key = { it.id }) { order ->
                                 AdminOrderControlCard(
                                     order = order,
+                                    isBranchAdminView = true,
+                                    onAcceptOrder = { onAcceptOrder(order.id) },
+                                    onRejectOrder = { reason -> onRejectOrder(order.id, reason) },
                                     onChangeStatus = { status -> onUpdateOrderStatus(order.id, status) },
                                     onViewDetails = { inspectedOrderDetail = order to null }
                                 )
@@ -2363,8 +2510,30 @@ fun BranchAdminDashboardScreen(
         }
     }
 
-    // Instant Real-Time Order Delivered Popup (triggers on ANY Branch Admin tab)
-    val activePopup = deliveredPopupQueue.firstOrNull()
+    // Instant Real-Time NEW ORDER Popup (Branch Admin ONLY, triggers on ANY tab)
+    val activeNewOrderPopup = newOrderPopupQueue.firstOrNull()
+    if (activeNewOrderPopup != null) {
+        NewBranchOrderPopupModal(
+            order = activeNewOrderPopup,
+            remainingInQueue = (newOrderPopupQueue.size - 1).coerceAtLeast(0),
+            onAccept = { id ->
+                onAcceptOrder(id)
+                onDismissNewOrderPopup()
+            },
+            onReject = { id, reason ->
+                onRejectOrder(id, reason)
+                onDismissNewOrderPopup()
+            },
+            onViewOrder = { order ->
+                onDismissNewOrderPopup()
+                inspectedOrderDetail = order to null
+            },
+            onDismiss = onDismissNewOrderPopup
+        )
+    }
+
+    // Instant Real-Time Order Delivered Popup (triggers on ANY Branch Admin tab when no new order popup is shown)
+    val activePopup = if (activeNewOrderPopup == null) deliveredPopupQueue.firstOrNull() else null
     if (activePopup != null) {
         OrderDeliveredPopupModal(
             notification = activePopup,
@@ -2531,18 +2700,32 @@ private fun IncomingOrderAlertBanner(
 @Composable
 private fun AdminOrderControlCard(
     order: CafeOrder,
+    isBranchAdminView: Boolean = false,
+    onAcceptOrder: (() -> Unit)? = null,
+    onRejectOrder: ((String) -> Unit)? = null,
     onChangeStatus: (OrderStatus) -> Unit,
     onViewDetails: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val currentStatus = OrderStatus.fromString(order.status)
     val isDelivery = order.orderType.equals(OrderType.DELIVERY.name, ignoreCase = true)
+    val isPickup = !isDelivery
     val hasGpsPin = isDelivery && order.hasDeliveryLocation()
+    var showRejectDialog by remember(order.id) { mutableStateOf(false) }
+    var rejectReasonInput by remember(order.id) { mutableStateOf("") }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        border = BorderStroke(
+            width = if (currentStatus == OrderStatus.Pending) 1.8.dp else 1.dp,
+            color = when (currentStatus) {
+                OrderStatus.Pending -> LahoriGold
+                OrderStatus.Rejected -> LahoriRed
+                OrderStatus.Delivered -> LahoriSuccess
+                else -> MaterialTheme.colorScheme.outline
+            }
+        ),
         shadowElevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -2558,11 +2741,35 @@ private fun AdminOrderControlCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "#${order.id.takeLast(6).uppercase()} • ${order.branchId.uppercase()}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "#${order.id.takeLast(6).uppercase()} • ${order.branchId.uppercase()}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Surface(
+                            color = when (currentStatus) {
+                                OrderStatus.Pending -> LahoriGold
+                                OrderStatus.Confirmed -> LahoriSuccess
+                                OrderStatus.Preparing -> LahoriWarning
+                                OrderStatus.Ready -> LahoriBlack
+                                OrderStatus.OutForDelivery -> LahoriBlack
+                                OrderStatus.Delivered -> LahoriSuccess
+                                OrderStatus.Rejected -> LahoriRed
+                            },
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = currentStatus.displayTitleFor(order.orderType).uppercase(),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Black),
+                                color = if (currentStatus == OrderStatus.Pending) LahoriBlack else LahoriWhite,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     Text(
                         text = "${order.customerName} (${order.orderType}) • ${formatOrderDate(order.createdAt)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -2578,7 +2785,7 @@ private fun AdminOrderControlCard(
                     Text(
                         text = if (order.deliveryFeePkr == 0L) "Delivery: Rs. 0 (FREE)" else "Delivery: ${formatPkr(order.deliveryFeePkr)}",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = LahoriSuccess
+                        color = if (order.deliveryFeePkr == 0L) LahoriSuccess else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -2591,10 +2798,12 @@ private fun AdminOrderControlCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val deliverySummary = if (order.deliveryFeePkr == 0L) "FREE" else formatPkr(order.deliveryFeePkr)
                     Text(
-                        text = "Subtotal: ${formatPkr(order.subtotalPkr)} • Delivery Charges: Rs. 0",
+                        text = "Subtotal: ${formatPkr(order.subtotalPkr)} • Delivery: $deliverySummary • ${order.paymentMethod}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
                     )
                     TextButton(
                         onClick = onViewDetails,
@@ -2719,36 +2928,210 @@ private fun AdminOrderControlCard(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
-            Text("UPDATE STATUS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                val isPickup = order.orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
-                OrderStatus.entries.forEach { st ->
-                    val active = st == currentStatus
-                    val chipLabel = when (st) {
-                        OrderStatus.Dispatched -> if (isPickup) "Ready for Pickup" else st.name
-                        OrderStatus.Delivered -> if (isPickup) "Picked Up" else st.name
-                        else -> st.name
-                    }
-                    FilterChip(
-                        selected = active,
-                        onClick = { if (!active) onChangeStatus(st) },
-                        label = { Text(chipLabel, fontSize = 11.sp) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = when (st) {
-                                OrderStatus.Confirmed -> LahoriRed
-                                OrderStatus.Preparing -> LahoriWarning
-                                OrderStatus.Dispatched -> LahoriBlack
-                                OrderStatus.Delivered -> LahoriSuccess
-                            },
-                            selectedLabelColor = LahoriWhite
+            when (currentStatus) {
+                OrderStatus.Pending -> {
+                    if (isBranchAdminView && onAcceptOrder != null && onRejectOrder != null) {
+                        Text(
+                            text = "ACTION REQUIRED — ACCEPT OR REJECT",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = LahoriRed
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = onAcceptOrder,
+                                colors = ButtonDefaults.buttonColors(containerColor = LahoriSuccess, contentColor = LahoriWhite),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(46.dp)
+                                    .testTag("branch_accept_order_${order.id}")
+                            ) {
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("ACCEPT ORDER", style = MaterialTheme.typography.labelLarge)
+                            }
+                            OutlinedButton(
+                                onClick = { showRejectDialog = true },
+                                border = BorderStroke(1.2.dp, LahoriRed),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(46.dp)
+                                    .testTag("branch_reject_order_${order.id}")
+                            ) {
+                                Icon(Icons.Filled.Cancel, contentDescription = null, tint = LahoriRed, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("REJECT", style = MaterialTheme.typography.labelLarge, color = LahoriRed)
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = LahoriGold.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, LahoriGold),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Awaiting Assigned Branch Admin Approval",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
+
+                OrderStatus.Rejected -> {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = LahoriRed.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, LahoriRed.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "ORDER REJECTED",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                                color = LahoriRed
+                            )
+                            if (order.rejectionReason.isNotBlank()) {
+                                Text(
+                                    text = "Reason: ${order.rejectionReason}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                OrderStatus.Delivered -> {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = LahoriSuccess.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, LahoriSuccess.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (isPickup) "ORDER PICKED UP — COMPLETED" else "ORDER DELIVERED — COMPLETED",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = LahoriSuccess,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
+                else -> {
+                    val nextStatus = when (currentStatus) {
+                        OrderStatus.Confirmed -> OrderStatus.Preparing
+                        OrderStatus.Preparing -> OrderStatus.Ready
+                        OrderStatus.Ready -> if (isPickup) OrderStatus.Delivered else OrderStatus.OutForDelivery
+                        OrderStatus.OutForDelivery -> OrderStatus.Delivered
+                        else -> null
+                    }
+                    if (nextStatus != null) {
+                        Button(
+                            onClick = { onChangeStatus(nextStatus) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (nextStatus == OrderStatus.Delivered) LahoriSuccess else LahoriRed,
+                                contentColor = LahoriWhite
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("admin_next_status_${order.id}")
+                        ) {
+                            Text(
+                                text = "MARK AS ${nextStatus.displayTitleFor(order.orderType).uppercase()}",
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+
+                    Text("UPDATE STATUS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val progressionStatuses = listOf(
+                        OrderStatus.Confirmed,
+                        OrderStatus.Preparing,
+                        OrderStatus.Ready,
+                        OrderStatus.OutForDelivery,
+                        OrderStatus.Delivered
                     )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        progressionStatuses.forEach { st ->
+                            val active = st == currentStatus
+                            val chipLabel = st.displayTitleFor(order.orderType)
+                            FilterChip(
+                                selected = active,
+                                onClick = { if (!active) onChangeStatus(st) },
+                                label = { Text(chipLabel, fontSize = 11.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = when (st) {
+                                        OrderStatus.Confirmed -> LahoriRed
+                                        OrderStatus.Preparing -> LahoriWarning
+                                        OrderStatus.Ready -> LahoriBlack
+                                        OrderStatus.OutForDelivery -> LahoriBlack
+                                        OrderStatus.Delivered -> LahoriSuccess
+                                        else -> LahoriBlack
+                                    },
+                                    selectedLabelColor = LahoriWhite
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+
+    if (showRejectDialog && onRejectOrder != null) {
+        AlertDialog(
+            onDismissRequest = { showRejectDialog = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("Reject Order #${order.id.takeLast(6).uppercase()}?", style = MaterialTheme.typography.titleLarge) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "The customer will be notified immediately that the restaurant could not accept this order.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = rejectReasonInput,
+                        onValueChange = { rejectReasonInput = it },
+                        label = { Text("Reason (optional)") },
+                        placeholder = { Text("e.g. Item out of stock / Kitchen busy") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("branch_reject_reason_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRejectOrder(rejectReasonInput.trim())
+                        showRejectDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = LahoriRed, contentColor = LahoriWhite),
+                    modifier = Modifier.testTag("branch_confirm_reject_btn")
+                ) {
+                    Text("CONFIRM REJECT")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRejectDialog = false }) {
+                    Text("CANCEL", color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        )
     }
 }
 

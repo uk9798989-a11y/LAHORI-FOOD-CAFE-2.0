@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DoneAll
@@ -36,9 +37,11 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.RestaurantMenu
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.VolumeUp
@@ -49,6 +52,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -85,6 +90,302 @@ import com.example.ui.theme.LahoriGold
 import com.example.ui.theme.LahoriRed
 import com.example.ui.theme.LahoriSuccess
 import com.example.ui.theme.LahoriWhite
+
+/**
+ * Instant Real-Time New Order Popup for the assigned BRANCH ADMIN ONLY.
+ * Super Admin NEVER receives this popup.
+ * Displays full order details (order #, customer name, phone, items & qty, total, payment method,
+ * delivery address, order time) with direct Accept and Reject actions.
+ */
+@Composable
+fun NewBranchOrderPopupModal(
+    order: CafeOrder,
+    remainingInQueue: Int,
+    onAccept: (String) -> Unit,
+    onReject: (orderId: String, reason: String) -> Unit,
+    onViewOrder: (CafeOrder) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var visible by remember(order.id) { mutableStateOf(false) }
+    var showRejectReasonBox by remember(order.id) { mutableStateOf(false) }
+    var rejectionReasonInput by remember(order.id) { mutableStateOf("") }
+
+    LaunchedEffect(order.id) {
+        visible = true
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn() + scaleIn(
+                    initialScale = 0.88f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = LahoriBlack,
+                    border = BorderStroke(2.dp, LahoriGold),
+                    shadowElevation = 20.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("branch_new_order_popup_modal")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(LahoriRed, Color(0xFF7B0C1C), LahoriBlack)
+                                    )
+                                )
+                                .padding(horizontal = 18.dp, vertical = 16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = LahoriGold,
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Filled.NotificationsActive,
+                                                contentDescription = null,
+                                                tint = LahoriBlack,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "NEW ORDER ALERT!",
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 17.sp
+                                            ),
+                                            color = LahoriGold
+                                        )
+                                        Text(
+                                            text = if (remainingInQueue > 0) {
+                                                "${order.branchName} • +$remainingInQueue more waiting"
+                                            } else {
+                                                "${order.branchName} • Needs Confirmation"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = LahoriWhite
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onDismiss,
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Dismiss popup",
+                                        tint = LahoriWhite
+                                    )
+                                }
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = LahoriDarkCard,
+                                border = BorderStroke(1.dp, LahoriGold.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.ReceiptLong,
+                                        label = "Order Number",
+                                        value = "#${order.id.takeLast(6).uppercase()} (${order.orderType})",
+                                        valueColor = LahoriGold
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.Person,
+                                        label = "Customer Name",
+                                        value = order.customerName.ifBlank { "Customer" }
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.Phone,
+                                        label = "Customer Phone",
+                                        value = order.customerPhone.ifBlank { "Not provided" }
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.RestaurantMenu,
+                                        label = "Ordered Items & Quantities",
+                                        value = order.itemsSummary.ifBlank { "See details" }
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.Storefront,
+                                        label = "Order Total",
+                                        value = "${formatPkr(order.totalPkr)} (Delivery: ${if (order.deliveryFeePkr == 0L) "FREE" else formatPkr(order.deliveryFeePkr)})",
+                                        valueColor = Color(0xFF4ADE80)
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.Payment,
+                                        label = "Payment Method",
+                                        value = order.paymentMethod.ifBlank { "Cash on Delivery" }
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.LocationOn,
+                                        label = "Delivery Address",
+                                        value = order.deliveryAddress.ifBlank { order.branchName }
+                                    )
+                                    PopupInfoRow(
+                                        icon = Icons.Filled.Schedule,
+                                        label = "Order Time",
+                                        value = formatOrderDate(order.createdAt)
+                                    )
+                                }
+                            }
+
+                            if (showRejectReasonBox) {
+                                OutlinedTextField(
+                                    value = rejectionReasonInput,
+                                    onValueChange = { rejectionReasonInput = it },
+                                    label = { Text("Rejection Reason (optional)") },
+                                    placeholder = { Text("e.g. Item out of stock or kitchen busy", color = LahoriWhite.copy(alpha = 0.55f)) },
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = LahoriRed,
+                                        unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                                        focusedTextColor = LahoriWhite,
+                                        unfocusedTextColor = LahoriWhite,
+                                        focusedLabelColor = LahoriGold,
+                                        unfocusedLabelColor = LahoriWhite.copy(alpha = 0.7f),
+                                        focusedContainerColor = LahoriDarkCard,
+                                        unfocusedContainerColor = LahoriDarkCard
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("popup_reject_reason_input")
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showRejectReasonBox = false },
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, LahoriWhite.copy(alpha = 0.45f)),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = LahoriWhite),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Text("CANCEL")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            onReject(order.id, rejectionReasonInput.trim())
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = LahoriRed, contentColor = LahoriWhite),
+                                        modifier = Modifier
+                                            .weight(1.2f)
+                                            .height(48.dp)
+                                            .testTag("popup_confirm_reject_btn")
+                                    ) {
+                                        Icon(Icons.Filled.Cancel, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("CONFIRM REJECT", fontWeight = FontWeight.Black)
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showRejectReasonBox = true },
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(1.5.dp, LahoriRed),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = LahoriRed),
+                                        modifier = Modifier
+                                            .weight(0.9f)
+                                            .height(50.dp)
+                                            .testTag("popup_reject_order_btn")
+                                    ) {
+                                        Icon(Icons.Filled.Cancel, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("REJECT", fontWeight = FontWeight.Black)
+                                    }
+                                    Button(
+                                        onClick = { onAccept(order.id) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = LahoriSuccess,
+                                            contentColor = LahoriWhite
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1.2f)
+                                            .height(50.dp)
+                                            .testTag("popup_accept_order_btn")
+                                    ) {
+                                        Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("ACCEPT ORDER", fontWeight = FontWeight.Black)
+                                    }
+                                }
+                                TextButton(
+                                    onClick = { onViewOrder(order) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("popup_view_order_details_btn")
+                                ) {
+                                    Text("View Full Receipt & Map", color = LahoriGold, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /**
  * Instant Real-Time Admin Popup displayed immediately when any order transitions to "Delivered".
@@ -247,7 +548,7 @@ fun OrderDeliveredPopupModal(
                                     PopupInfoRow(
                                         icon = Icons.Filled.Storefront,
                                         label = "Total Order Amount",
-                                        value = "${formatPkr(notification.totalPkr)} • Delivery: Rs. 0 (FREE)",
+                                        value = formatPkr(notification.totalPkr),
                                         valueColor = Color(0xFF4ADE80)
                                     )
                                     PopupInfoRow(
@@ -430,7 +731,16 @@ fun AdminOrderDetailDialog(
                         PopupInfoRow(Icons.Filled.Storefront, "Branch", branchName.ifBlank { "Lahori Food Cafe" })
                         PopupInfoRow(Icons.Filled.Person, "Customer", customerName)
                         PopupInfoRow(Icons.Filled.Phone, "Phone", customerPhone.ifBlank { "Not provided" })
+                        PopupInfoRow(Icons.Filled.Payment, "Payment Method", order?.paymentMethod?.ifBlank { "Cash on Delivery" } ?: "Cash on Delivery")
                         PopupInfoRow(Icons.Filled.LocationOn, "Delivery Address", deliveryAddress.ifBlank { "Pickup" })
+                        if (order != null && OrderStatus.fromString(order.status) == OrderStatus.Rejected && order.rejectionReason.isNotBlank()) {
+                            PopupInfoRow(
+                                icon = Icons.Filled.Cancel,
+                                label = "Rejection Reason",
+                                value = order.rejectionReason,
+                                valueColor = LahoriRed
+                            )
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -797,7 +1107,7 @@ fun AdminNotificationsHistoryTab(
                             }
 
                             Text(
-                                text = "${notif.customerName} • ${formatPkr(notif.totalPkr)} • Delivery Rs. 0",
+                                text = "${notif.customerName} • ${formatPkr(notif.totalPkr)} • ${notif.branchName}",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = if (isUnread) LahoriWhite else MaterialTheme.colorScheme.onSurface
                             )

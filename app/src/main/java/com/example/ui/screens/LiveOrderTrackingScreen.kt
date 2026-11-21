@@ -147,15 +147,16 @@ fun LiveOrderTrackingScreen(
             previousObservedStatus != null &&
             previousObservedStatus != statusNow
         ) {
-            val isPickup = snap.order.orderType.equals("PICKUP", ignoreCase = true)
-            val label = when (statusNow) {
-                OrderStatus.Confirmed -> "Order Confirmed"
-                OrderStatus.Preparing -> "Preparing in Kitchen"
-                OrderStatus.Dispatched -> if (isPickup) "Ready for Pickup" else "Out for Delivery"
-                OrderStatus.Delivered -> if (isPickup) "Picked Up" else "Delivered"
+            liveTransitionBanner = when (statusNow) {
+                OrderStatus.Confirmed -> "Order Confirmed! The restaurant has accepted your order."
+                OrderStatus.Rejected -> if (snap.order.rejectionReason.isNotBlank()) {
+                    "Order Rejected: ${snap.order.rejectionReason}"
+                } else {
+                    "Order Rejected by the restaurant."
+                }
+                else -> "Live update: ${statusNow.customerHeadlineFor(snap.order.orderType)}"
             }
-            liveTransitionBanner = "Live update received: $label"
-            delay(5000L)
+            delay(5500L)
             liveTransitionBanner = null
         }
         previousObservedOrderId = snap.order.id
@@ -166,7 +167,7 @@ fun LiveOrderTrackingScreen(
     var nowTickMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(currentSnapshot?.order?.id, currentStatus) {
         nowTickMillis = System.currentTimeMillis()
-        while (currentStatus != null && currentStatus != OrderStatus.Delivered) {
+        while (currentStatus != null && currentStatus.isActive) {
             delay(5_000L)
             nowTickMillis = System.currentTimeMillis()
         }
@@ -222,9 +223,11 @@ fun LiveOrderTrackingScreen(
                         }
 
                         if (currentSnapshot != null) {
+                            val snapStatus = OrderStatus.fromString(currentSnapshot.order.status)
                             LiveSnapshotStatusChip(
-                                isCompleted = OrderStatus.fromString(currentSnapshot.order.status) == OrderStatus.Delivered,
-                                isFromCache = currentSnapshot.isFromCache
+                                isCompleted = snapStatus == OrderStatus.Delivered,
+                                isFromCache = currentSnapshot.isFromCache,
+                                isRejected = snapStatus == OrderStatus.Rejected
                             )
                         }
                     }
@@ -410,6 +413,65 @@ fun LiveOrderTrackingScreen(
                                 syncAgeText = syncAgeText,
                                 isFromCache = snapshot.isFromCache
                             )
+                        }
+
+                        // 1b. Pending Confirmation or Rejection Info Banner
+                        if (summary.status == OrderStatus.Pending) {
+                            item(key = "pending_confirmation_card") {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = LahoriGold.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.2.dp, LahoriGold),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("pending_confirmation_banner")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Order Placed Successfully",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                                            color = if (isDark) LahoriGold else Color(0xFF92400E)
+                                        )
+                                        Text(
+                                            text = "Waiting for restaurant confirmation. ${order.branchName} has been alerted and will confirm your order shortly.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (summary.isRejected) {
+                            item(key = "rejected_order_card") {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = LahoriRed.copy(alpha = 0.15f),
+                                    border = BorderStroke(1.5.dp, LahoriRed),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("rejected_order_banner")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Order Rejected",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+                                            color = LahoriRed
+                                        )
+                                        Text(
+                                            text = summary.rejectionReason.ifBlank {
+                                                "The branch could not accept this order right now. Please contact ${order.branchName} or try another item."
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         // 2. Quick Actions & Live Metrics Strip
@@ -645,6 +707,17 @@ fun LiveOrderTrackingScreen(
                                                 color = if (isDark) Color(0xFF4ADE80) else LahoriSuccess
                                             )
                                         }
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Payment Method", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = order.paymentMethod.ifBlank { "Cash on Delivery" },
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
                                     }
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -897,7 +970,7 @@ private fun LiveOrderHeroCard(
     val infiniteTransition = rememberInfiniteTransition(label = "hero_beacon")
     val iconScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
-        targetValue = if (summary.isCompleted) 1.0f else 1.08f,
+        targetValue = if (summary.isCompleted || summary.isRejected) 1.0f else 1.08f,
         animationSpec = infiniteRepeatable(
             animation = tween(1000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -905,15 +978,22 @@ private fun LiveOrderHeroCard(
         label = "beacon_scale"
     )
 
-    val gradientColors = if (summary.isCompleted) {
-        listOf(Color(0xFF0A3A1E), Color(0xFF146636), LahoriSuccess)
-    } else {
-        listOf(LahoriBlack, Color(0xFF4F0714), LahoriRedDark, LahoriRed)
+    val gradientColors = when {
+        summary.isRejected -> listOf(Color(0xFF450A0A), Color(0xFF7F1D1D), LahoriRedDark)
+        summary.isCompleted -> listOf(Color(0xFF0A3A1E), Color(0xFF146636), LahoriSuccess)
+        else -> listOf(LahoriBlack, Color(0xFF4F0714), LahoriRedDark, LahoriRed)
     }
 
     Surface(
         shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.5.dp, if (summary.isCompleted) Color(0xFF4ADE80).copy(alpha = 0.6f) else LahoriGold.copy(alpha = 0.7f)),
+        border = BorderStroke(
+            1.5.dp,
+            when {
+                summary.isRejected -> LahoriRed
+                summary.isCompleted -> Color(0xFF4ADE80).copy(alpha = 0.6f)
+                else -> LahoriGold.copy(alpha = 0.7f)
+            }
+        ),
         shadowElevation = 8.dp,
         modifier = Modifier
             .fillMaxWidth()
@@ -999,8 +1079,10 @@ private fun LiveOrderHeroCard(
                     }
                 }
 
-                // Custom Canvas 4-stage live progress route
-                LiveRouteProgressCanvas(summary = summary)
+                // Custom Canvas live progress route (hidden if order was rejected)
+                if (!summary.isRejected) {
+                    LiveRouteProgressCanvas(summary = summary)
+                }
 
                 // Percentage bar & sync metadata
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -30,10 +30,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeliveryDining
+import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -79,17 +82,21 @@ import com.example.ui.theme.LahoriWarning
 import com.example.ui.theme.LahoriWhite
 
 fun stageIconFor(status: OrderStatus, isPickup: Boolean): ImageVector = when (status) {
+    OrderStatus.Pending -> Icons.Filled.HourglassTop
     OrderStatus.Confirmed -> Icons.Filled.ReceiptLong
     OrderStatus.Preparing -> Icons.Filled.LocalFireDepartment
-    OrderStatus.Dispatched -> if (isPickup) Icons.Filled.ShoppingBag else Icons.Filled.DeliveryDining
+    OrderStatus.Ready -> if (isPickup) Icons.Filled.ShoppingBag else Icons.Filled.Inventory2
+    OrderStatus.OutForDelivery -> if (isPickup) Icons.Filled.ShoppingBag else Icons.Filled.DeliveryDining
     OrderStatus.Delivered -> Icons.Filled.CheckCircle
+    OrderStatus.Rejected -> Icons.Filled.Cancel
 }
 
 @Composable
 fun LiveSnapshotStatusChip(
     isCompleted: Boolean,
     isFromCache: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isRejected: Boolean = false
 ) {
     val transition = rememberInfiniteTransition(label = "snapshot_beacon")
     val pulseScale by transition.animateFloat(
@@ -112,6 +119,7 @@ fun LiveSnapshotStatusChip(
     )
 
     val (tint, label, icon) = when {
+        isRejected -> Triple(LahoriRed, "REJECTED", Icons.Filled.Cancel)
         isCompleted -> Triple(LahoriSuccess, "COMPLETED", Icons.Filled.CheckCircle)
         isFromCache -> Triple(LahoriWarning, "OFFLINE CACHE", Icons.Filled.CloudOff)
         else -> Triple(Color(0xFF22C55E), "LIVE SYNC", Icons.Filled.CloudDone)
@@ -128,7 +136,7 @@ fun LiveSnapshotStatusChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (!isCompleted && !isFromCache) {
+            if (!isCompleted && !isRejected && !isFromCache) {
                 Box(
                     modifier = Modifier
                         .size(8.dp)
@@ -249,7 +257,7 @@ fun LiveRouteProgressCanvas(
             }
 
             // Traveling energy dot toward next milestone while active
-            if (!summary.isCompleted && activeIdx < steps.lastIndex) {
+            if (!summary.isCompleted && !summary.isRejected && activeIdx < steps.lastIndex) {
                 val stepWidth = trackSpan / (steps.size - 1).coerceAtLeast(1)
                 val segStart = startX + (activeIdx * stepWidth)
                 val dotX = segStart + (stepWidth * beaconSweep)
@@ -537,7 +545,11 @@ fun CurrentOrderDashboardCard(
                         }
                     }
                 }
-                LiveSnapshotStatusChip(isCompleted = summary.isCompleted, isFromCache = false)
+                LiveSnapshotStatusChip(
+                    isCompleted = summary.isCompleted,
+                    isFromCache = false,
+                    isRejected = summary.isRejected
+                )
             }
 
             Row(

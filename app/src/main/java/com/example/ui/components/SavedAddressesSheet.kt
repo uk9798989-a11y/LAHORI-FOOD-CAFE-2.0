@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.LocationHelper
 import com.example.model.BranchDirectory
 import com.example.model.CafeBranch
+import com.example.model.DEFAULT_FREE_DELIVERY_MIN_ORDER_PKR
 import com.example.model.OrderType
 import com.example.model.SavedAddress
 import com.example.ui.theme.LahoriBlack
@@ -97,6 +98,7 @@ fun SavedAddressesBottomSheet(
     selectedBranchId: String = BranchDirectory.branch1.id,
     selectedLandmark: String = "",
     selectedAddressLabel: String = "Home",
+    freeDeliveryMinOrderPkr: Long = DEFAULT_FREE_DELIVERY_MIN_ORDER_PKR,
     deviceLatitude: Double? = null,
     deviceLongitude: Double? = null,
     detectedGpsAddress: String = "",
@@ -233,7 +235,7 @@ fun SavedAddressesBottomSheet(
                     )
                     Text(
                         text = if (activeMode == OrderType.DELIVERY) {
-                            "FREE DELIVERY (Rs. 0) • Type your address manually — no GPS needed"
+                            "Free delivery on orders Rs. ${freeDeliveryMinOrderPkr}+ • Type address manually — no GPS needed"
                         } else {
                             "Lahori Food Cafe • TMP & Zahir Pir Live Store Finder"
                         },
@@ -300,7 +302,7 @@ fun SavedAddressesBottomSheet(
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    text = if (mode == OrderType.DELIVERY) "DELIVERY • FREE" else mode.label,
+                                    text = if (mode == OrderType.DELIVERY) "DELIVERY" else mode.label,
                                     style = MaterialTheme.typography.labelLarge,
                                     color = LahoriWhite
                                 )
@@ -371,7 +373,7 @@ fun SavedAddressesBottomSheet(
                                                 modifier = Modifier.size(12.dp)
                                             )
                                             Text(
-                                                text = "FREE DELIVERY",
+                                                text = "FREE Rs.${freeDeliveryMinOrderPkr}+",
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontWeight = FontWeight.Black,
                                                     fontSize = 10.sp
@@ -478,7 +480,7 @@ fun SavedAddressesBottomSheet(
                                 )
 
                                 Text(
-                                    text = "Serving Branch: ${previewBranch.displayShortLabel()} (${previewBranch.name}) • Rs. 0 Delivery",
+                                    text = "Serving Branch: ${previewBranch.displayShortLabel()} • Fee Rs. ${previewBranch.deliveryFeePkr} (FREE at Rs. ${freeDeliveryMinOrderPkr}+)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = LahoriGold
                                 )
@@ -670,7 +672,7 @@ fun SavedAddressesBottomSheet(
                                                 )
                                             }
                                             Text(
-                                                text = "${addr.branchName} • FREE Delivery",
+                                                text = "${addr.branchName} • Free Delivery Rs. ${freeDeliveryMinOrderPkr}+",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = LahoriGold
                                             )

@@ -11,11 +11,17 @@ import com.example.model.AdminDeliveryNotification
 import com.example.model.BranchAdminEntry
 import com.example.model.BranchBanner
 import com.example.model.BranchDirectory
+import com.example.model.BranchMenuOverride
 import com.example.model.CafeBranch
 import com.example.model.CafeFeedback
 import com.example.model.CafeOrder
 import com.example.model.CartItem
+import com.example.model.DEFAULT_BRANCH_DELIVERY_FEE_PKR
+import com.example.model.DEFAULT_PAYMENT_METHOD
+import com.example.model.DeliverySettings
 import com.example.model.MenuItem
+import com.example.model.NotificationRoutingPolicy
+import com.example.model.OrderPricingEngine
 import com.example.model.OrderReview
 import com.example.model.OrderStatus
 import com.example.model.OrderType
@@ -38,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -58,7 +65,8 @@ data class PendingGuestOrder(
     val customerPhone: String,
     val guestSessionId: String,
     val promoCode: String,
-    val discountPkr: Long
+    val discountPkr: Long,
+    val paymentMethod: String = DEFAULT_PAYMENT_METHOD
 )
 
 data class SharedSessionState(
@@ -129,6 +137,38 @@ class SessionCartController {
             appliedPromoLabel = "",
             appliedPromoBranchId = ""
         )
+    }
+
+    /**
+     * Synchronizes existing cart items with the currently selected branch's effective menu prices
+     * and removes any items that are disabled/unavailable at this branch.
+     */
+    fun syncCartWithEffectiveMenu(effectiveMenu: List<MenuItem>) {
+        if (effectiveMenu.isEmpty()) return
+        val currentCart = _state.value.cartItems
+        if (currentCart.isEmpty()) return
+        val menuById = effectiveMenu.associateBy { it.id }
+        var changed = false
+        val updated = currentCart.mapNotNull { cartItem ->
+            val latest = menuById[cartItem.menuItem.id]
+            when {
+                latest == null -> cartItem
+                !latest.available -> {
+                    changed = true
+                    null
+                }
+                latest.pricePkr != cartItem.menuItem.pricePkr ||
+                    latest.name != cartItem.menuItem.name ||
+                    latest.imageUrl != cartItem.menuItem.imageUrl -> {
+                    changed = true
+                    cartItem.copy(menuItem = latest)
+                }
+                else -> cartItem
+            }
+        }
+        if (changed) {
+            _state.value = _state.value.copy(cartItems = updated)
+        }
     }
 
     private fun SharedSessionState.sanitizePromoForBranch(newBranchId: String): SharedSessionState =
@@ -399,6 +439,15 @@ class LahoriViewModel(
     private val _isSavingBranchBanner = MutableStateFlow(false)
     val isSavingBranchBanner: StateFlow<Boolean> = _isSavingBranchBanner.asStateFlow()
 
+    private val _isPlacingOrder = MutableStateFlow(false)
+    val isPlacingOrder: StateFlow<Boolean> = _isPlacingOrder.asStateFlow()
+
+    private val _isSavingDeliverySettings = MutableStateFlow(false)
+    val isSavingDeliverySettings: StateFlow<Boolean> = _isSavingDeliverySettings.asStateFlow()
+
+    private val _isSavingBranchMenuOverride = MutableStateFlow(false)
+    val isSavingBranchMenuOverride: StateFlow<Boolean> = _isSavingBranchMenuOverride.asStateFlow()
+
     private val _branchAssignmentLoaded = MutableStateFlow(isSuperAdminByEmail || currentUserEmail.isBlank())
     val branchAssignmentLoaded: StateFlow<Boolean> = _branchAssignmentLoaded.asStateFlow()
 
@@ -408,8 +457,12 @@ class LahoriViewModel(
     private val _fcmTokenRegistered = MutableStateFlow(false)
     val fcmTokenRegistered: StateFlow<Boolean> = _fcmTokenRegistered.asStateFlow()
 
+    // BranchAdmin ONLY new order alert & deduplicated popup queue (NEVER populated for Super Admin)
     private val _newBranchOrderAlert = MutableStateFlow<CafeOrder?>(null)
     val newBranchOrderAlert: StateFlow<CafeOrder?> = _newBranchOrderAlert.asStateFlow()
+
+    private val _newBranchOrderPopupQueue = MutableStateFlow<List<CafeOrder>>(emptyList())
+    val newBranchOrderPopupQueue: StateFlow<List<CafeOrder>> = _newBranchOrderPopupQueue.asStateFlow()
 
     private val _deliveredPopupQueue = MutableStateFlow<List<AdminDeliveryNotification>>(emptyList())
     val deliveredPopupQueue: StateFlow<List<AdminDeliveryNotification>> = _deliveredPopupQueue.asStateFlow()
@@ -428,9 +481,6 @@ class LahoriViewModel(
     private var initialBranchOrderLoadComplete = false
     private var lastObservedBranchId: String? = null
 
-    private val seenSuperAdminOrderIds = mutableSetOf<String>()
-    private var initialSuperAdminOrderLoadComplete = false
-
     private val seenDeliveredNotificationIds = mutableSetOf<String>()
     private var initialAdminNotifLoadComplete = false
     private var lastAdminNotifScopeKey: String? = null
@@ -444,6 +494,15 @@ class LahoriViewModel(
             emit(BranchDirectory.defaultBranches)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), BranchDirectory.defaultBranches)
+
+    val deliverySettings: StateFlow<DeliverySettings> = repository.observeDeliverySettings()
+        .catch { error ->
+            val firestoreError = unwrapFirestoreException(error)
+            if (firestoreError == null && error is CancellationException) throw error
+            Log.w(TAG, "Delivery settings stream error", firestoreError ?: error)
+            emit(DeliverySettings())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), DeliverySettings())
 
     val menuState: StateFlow<UiState<List<MenuItem>>> = repository.observeMenuItems()
         .map<List<MenuItem>, UiState<List<MenuItem>>> { items ->
@@ -464,6 +523,35 @@ class LahoriViewModel(
             emit(UiState.Success(SeedMenuData.initialItems))
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    @Suppress("OPT_IN_USAGE")
+    val selectedBranchOverrides: StateFlow<List<BranchMenuOverride>> = sessionCart.state
+        .map { it.selectedBranchId }
+        .distinctUntilChanged()
+        .flatMapLatest { branchId ->
+            repository.observeBranchMenuOverrides(branchId)
+                .catch { error ->
+                    val firestoreError = unwrapFirestoreException(error)
+                    if (firestoreError == null && error is CancellationException) throw error
+                    Log.w(TAG, "Selected branch overrides error", firestoreError ?: error)
+                    emit(emptyList())
+                }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    /**
+     * Customer-facing menu reflecting the currently selected branch's independent prices & availability.
+     */
+    val effectiveMenuState: StateFlow<UiState<List<MenuItem>>> =
+        combine(menuState, selectedBranchOverrides) { globalState, overrides ->
+            when (globalState) {
+                is UiState.Success -> UiState.Success(
+                    OrderPricingEngine.applyBranchOverrides(globalState.data, overrides)
+                )
+                is UiState.Loading -> UiState.Loading
+                is UiState.Error -> globalState
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val userProfile: StateFlow<UserProfile?> = repository.observeUserProfile(currentUserId)
         .catch { error ->
@@ -561,7 +649,7 @@ class LahoriViewModel(
     val latestActiveOrder: StateFlow<CafeOrder?> = customerOrdersState
         .map { state ->
             (state as? UiState.Success)?.data
-                ?.firstOrNull { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
+                ?.firstOrNull { OrderStatus.fromString(it.status).isActive }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 
@@ -588,20 +676,24 @@ class LahoriViewModel(
     @Suppress("OPT_IN_USAGE")
     val branchOrdersState: StateFlow<UiState<List<CafeOrder>>> = branchAdminAssignment
         .flatMapLatest { assignment ->
-            if (assignment == null || currentUserEmail.isBlank()) {
+            if (assignment == null || currentUserEmail.isBlank() || isSuperAdminByEmail) {
                 seenBranchOrderIds.clear()
                 initialBranchOrderLoadComplete = false
                 lastObservedBranchId = null
+                _newBranchOrderPopupQueue.value = emptyList()
+                _newBranchOrderAlert.value = null
                 flowOf(UiState.Success(emptyList()))
             } else {
                 if (lastObservedBranchId != assignment.branchId) {
                     seenBranchOrderIds.clear()
                     initialBranchOrderLoadComplete = false
                     lastObservedBranchId = assignment.branchId
+                    _newBranchOrderPopupQueue.value = emptyList()
+                    _newBranchOrderAlert.value = null
                 }
                 repository.observeBranchOrders(assignment.branchId)
                     .map<List<CafeOrder>, UiState<List<CafeOrder>>> { orders ->
-                        detectBranchNewOrders(orders)
+                        detectBranchNewOrders(orders, assignment.branchId)
                         UiState.Success(orders)
                     }
                     .catch { error ->
@@ -618,16 +710,31 @@ class LahoriViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     @Suppress("OPT_IN_USAGE")
+    val branchAdminMenuOverrides: StateFlow<List<BranchMenuOverride>> = branchAdminAssignment
+        .flatMapLatest { assignment ->
+            if (assignment == null || isSuperAdminByEmail) {
+                flowOf(emptyList())
+            } else {
+                repository.observeBranchMenuOverrides(assignment.branchId)
+                    .catch { error ->
+                        val firestoreError = unwrapFirestoreException(error)
+                        if (firestoreError == null && error is CancellationException) throw error
+                        Log.w(TAG, "Branch admin menu overrides stream error", firestoreError ?: error)
+                        emit(emptyList())
+                    }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    // Super Admin can view ALL orders across branches, but NEVER triggers new-order alerts/popups/sounds.
+    @Suppress("OPT_IN_USAGE")
     val superAdminOrdersState: StateFlow<UiState<List<CafeOrder>>> = effectiveRole
         .flatMapLatest { role ->
             if (role != UserRole.SuperAdmin) {
-                seenSuperAdminOrderIds.clear()
-                initialSuperAdminOrderLoadComplete = false
                 flowOf(UiState.Success(emptyList()))
             } else {
                 repository.observeAllOrders()
                     .map<List<CafeOrder>, UiState<List<CafeOrder>>> { orders ->
-                        detectSuperAdminNewOrders(orders)
                         UiState.Success(orders)
                     }
                     .catch { error ->
@@ -806,7 +913,8 @@ class LahoriViewModel(
                     promoCode = pending.promoCode,
                     discountPkr = pending.discountPkr,
                     deliveryLatitude = pending.deliveryLatitude,
-                    deliveryLongitude = pending.deliveryLongitude
+                    deliveryLongitude = pending.deliveryLongitude,
+                    paymentMethod = pending.paymentMethod
                 )
                 if (res.isSuccess) {
                     sessionCart.clearCart()
@@ -895,42 +1003,58 @@ class LahoriViewModel(
         }
     }
 
-    private fun detectBranchNewOrders(orders: List<CafeOrder>) {
+    private fun detectBranchNewOrders(orders: List<CafeOrder>, assignedBranchId: String) {
+        // Hard guard: Super Admin NEVER receives new-order popups, banners, or sounds.
+        if (isSuperAdminByEmail) return
+
+        // Keep popup queue fresh if an order in the queue was already accepted/rejected
+        val pendingIds = orders
+            .filter { OrderStatus.fromString(it.status) == OrderStatus.Pending }
+            .mapTo(mutableSetOf()) { it.id }
+        val filteredQueue = _newBranchOrderPopupQueue.value.filter { pendingIds.contains(it.id) }
+        if (filteredQueue.size != _newBranchOrderPopupQueue.value.size) {
+            _newBranchOrderPopupQueue.value = filteredQueue
+        }
+        val activeAlert = _newBranchOrderAlert.value
+        if (activeAlert != null && !pendingIds.contains(activeAlert.id)) {
+            _newBranchOrderAlert.value = null
+        }
+
         if (!initialBranchOrderLoadComplete) {
             orders.forEach { seenBranchOrderIds.add(it.id) }
             initialBranchOrderLoadComplete = true
             return
         }
-        val incoming = orders.filter {
-            !seenBranchOrderIds.contains(it.id) &&
-                OrderStatus.fromString(it.status) == OrderStatus.Confirmed
+        val incoming = orders.filter { order ->
+            !seenBranchOrderIds.contains(order.id) &&
+                OrderStatus.fromString(order.status) == OrderStatus.Pending &&
+                NotificationRoutingPolicy.shouldReceiveNewOrderAlert(
+                    recipientRole = UserRole.BranchAdmin,
+                    recipientBranchId = assignedBranchId,
+                    orderBranchId = order.branchId,
+                    userEmail = currentUserEmail
+                )
         }
         orders.forEach { seenBranchOrderIds.add(it.id) }
-        val newest = incoming.firstOrNull()
-        if (newest != null) {
-            _newBranchOrderAlert.value = newest
-        }
-    }
-
-    private fun detectSuperAdminNewOrders(orders: List<CafeOrder>) {
-        if (!initialSuperAdminOrderLoadComplete) {
-            orders.forEach { seenSuperAdminOrderIds.add(it.id) }
-            initialSuperAdminOrderLoadComplete = true
-            return
-        }
-        val incoming = orders.filter {
-            !seenSuperAdminOrderIds.contains(it.id) &&
-                OrderStatus.fromString(it.status) == OrderStatus.Confirmed
-        }
-        orders.forEach { seenSuperAdminOrderIds.add(it.id) }
-        val newest = incoming.firstOrNull()
-        if (newest != null) {
-            _newBranchOrderAlert.value = newest
+        if (incoming.isNotEmpty()) {
+            val existingIds = _newBranchOrderPopupQueue.value.mapTo(mutableSetOf()) { it.id }
+            val uniqueNew = incoming.filterNot { existingIds.contains(it.id) }
+            if (uniqueNew.isNotEmpty()) {
+                _newBranchOrderPopupQueue.value = _newBranchOrderPopupQueue.value + uniqueNew
+                _newBranchOrderAlert.value = uniqueNew.first()
+            }
         }
     }
 
     fun dismissNewBranchOrderAlert() {
         _newBranchOrderAlert.value = null
+    }
+
+    fun dismissCurrentNewOrderPopup() {
+        val current = _newBranchOrderPopupQueue.value
+        if (current.isNotEmpty()) {
+            _newBranchOrderPopupQueue.value = current.drop(1)
+        }
     }
 
     private fun processAdminDeliveryNotifications(notifications: List<AdminDeliveryNotification>) {
@@ -1197,10 +1321,17 @@ class LahoriViewModel(
         deliveryLatitude: Double = 0.0,
         deliveryLongitude: Double = 0.0,
         guestCheckout: Boolean,
+        paymentMethod: String = DEFAULT_PAYMENT_METHOD,
         onError: (String) -> Unit = {},
         onSuccess: (String) -> Unit
     ) {
+        if (_isPlacingOrder.value) return
         val s = sessionCart.state.value
+        if (s.cartItems.isEmpty()) {
+            onError("Your bucket is empty.")
+            return
+        }
+        _isPlacingOrder.value = true
         val selectedBranch = BranchDirectory.byId(s.selectedBranchId, branchesList.value)
         val addressText = if (s.orderType == OrderType.DELIVERY) {
             deliveryAddressOverride.trim()
@@ -1221,27 +1352,32 @@ class LahoriViewModel(
             0.0
         }
         viewModelScope.launch {
-            val res = repository.placeOrder(
-                cartItems = s.cartItems,
-                orderType = s.orderType,
-                deliveryAddress = addressText,
-                branchId = s.selectedBranchId,
-                customerName = customerName,
-                customerPhone = customerPhone,
-                guestCheckout = guestCheckout,
-                guestSessionId = s.guestSessionId,
-                promoCode = s.appliedPromoLabel,
-                discountPkr = s.appliedDiscountPkr,
-                deliveryLatitude = resolvedLat,
-                deliveryLongitude = resolvedLng
-            )
-            res.onSuccess { orderId ->
-                sessionCart.clearCart()
-                onSuccess(orderId)
-            }.onFailure { err ->
-                val msg = err.localizedMessage ?: "Order submission failed"
-                _actionError.value = msg
-                onError(msg)
+            try {
+                val res = repository.placeOrder(
+                    cartItems = s.cartItems,
+                    orderType = s.orderType,
+                    deliveryAddress = addressText,
+                    branchId = s.selectedBranchId,
+                    customerName = customerName,
+                    customerPhone = customerPhone,
+                    guestCheckout = guestCheckout,
+                    guestSessionId = s.guestSessionId,
+                    promoCode = s.appliedPromoLabel,
+                    discountPkr = s.appliedDiscountPkr,
+                    deliveryLatitude = resolvedLat,
+                    deliveryLongitude = resolvedLng,
+                    paymentMethod = paymentMethod
+                )
+                res.onSuccess { orderId ->
+                    sessionCart.clearCart()
+                    onSuccess(orderId)
+                }.onFailure { err ->
+                    val msg = err.localizedMessage ?: "Order submission failed"
+                    _actionError.value = msg
+                    onError(msg)
+                }
+            } finally {
+                _isPlacingOrder.value = false
             }
         }
     }
@@ -1273,11 +1409,117 @@ class LahoriViewModel(
         }
     }
 
+    fun acceptBranchOrder(orderId: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.acceptOrder(orderId)
+            res.onSuccess {
+                _newBranchOrderPopupQueue.value = _newBranchOrderPopupQueue.value.filterNot { it.id == orderId }
+                if (_newBranchOrderAlert.value?.id == orderId) _newBranchOrderAlert.value = null
+                onDone()
+            }.onFailure { err ->
+                _actionError.value = err.localizedMessage ?: "Failed to accept order"
+            }
+        }
+    }
+
+    fun rejectBranchOrder(orderId: String, rejectionReason: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.rejectOrder(orderId, rejectionReason)
+            res.onSuccess {
+                _newBranchOrderPopupQueue.value = _newBranchOrderPopupQueue.value.filterNot { it.id == orderId }
+                if (_newBranchOrderAlert.value?.id == orderId) _newBranchOrderAlert.value = null
+                onDone()
+            }.onFailure { err ->
+                _actionError.value = err.localizedMessage ?: "Failed to reject order"
+            }
+        }
+    }
+
     fun updateOrderStatus(orderId: String, newStatus: OrderStatus) {
         viewModelScope.launch {
             val res = repository.updateOrderStatus(orderId, newStatus)
             if (res.isFailure) {
                 _actionError.value = res.exceptionOrNull()?.localizedMessage ?: "Failed to update order status"
+            }
+        }
+    }
+
+    fun saveBranchMenuOverride(
+        branchId: String,
+        itemId: String,
+        pricePkr: Long,
+        available: Boolean,
+        onDone: () -> Unit = {}
+    ) {
+        if (_isSavingBranchMenuOverride.value) return
+        _isSavingBranchMenuOverride.value = true
+        viewModelScope.launch {
+            try {
+                val res = repository.saveBranchMenuOverride(
+                    branchId = branchId,
+                    itemId = itemId,
+                    pricePkr = pricePkr,
+                    available = available
+                )
+                res.onSuccess { onDone() }.onFailure { err ->
+                    _actionError.value = err.localizedMessage ?: "Failed to save branch menu price"
+                }
+            } finally {
+                _isSavingBranchMenuOverride.value = false
+            }
+        }
+    }
+
+    fun resetBranchMenuOverride(
+        branchId: String,
+        itemId: String,
+        onDone: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val res = repository.deleteBranchMenuOverride(branchId, itemId)
+            res.onSuccess { onDone() }.onFailure { err ->
+                _actionError.value = err.localizedMessage ?: "Failed to reset branch item price"
+            }
+        }
+    }
+
+    fun updateBranchDeliveryFee(
+        branchId: String,
+        deliveryFeePkr: Long,
+        onDone: () -> Unit = {}
+    ) {
+        if (_isSavingDeliverySettings.value) return
+        _isSavingDeliverySettings.value = true
+        viewModelScope.launch {
+            try {
+                val res = repository.updateBranchDeliveryFee(branchId, deliveryFeePkr)
+                res.onSuccess { onDone() }.onFailure { err ->
+                    _actionError.value = err.localizedMessage ?: "Failed to update branch delivery fee"
+                }
+            } finally {
+                _isSavingDeliverySettings.value = false
+            }
+        }
+    }
+
+    fun saveDeliverySettings(
+        freeDeliveryMinOrderPkr: Long,
+        defaultDeliveryFeePkr: Long,
+        onDone: () -> Unit = {}
+    ) {
+        if (_isSavingDeliverySettings.value) return
+        _isSavingDeliverySettings.value = true
+        viewModelScope.launch {
+            try {
+                val res = repository.saveDeliverySettings(
+                    freeDeliveryMinOrderPkr = freeDeliveryMinOrderPkr,
+                    defaultDeliveryFeePkr = defaultDeliveryFeePkr
+                )
+                res.onSuccess { onDone() }.onFailure { err ->
+                    _actionError.value = err.localizedMessage ?: "Failed to save delivery settings"
+                }
+            } finally {
+                _isSavingDeliverySettings.value = false
             }
         }
     }
@@ -1378,6 +1620,7 @@ class LahoriViewModel(
         mapUrl: String = "",
         openHours: String = "12:00 PM - 2:00 AM",
         deliveryRadiusKm: Long = 15L,
+        deliveryFeePkr: Long = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
         onDone: (String) -> Unit
     ) {
         if (_isSavingBranch.value) return
@@ -1395,7 +1638,8 @@ class LahoriViewModel(
                 longitude = longitude,
                 mapUrl = mapUrl,
                 openHours = openHours,
-                deliveryRadiusKm = deliveryRadiusKm
+                deliveryRadiusKm = deliveryRadiusKm,
+                deliveryFeePkr = deliveryFeePkr
             )
             _isSavingBranch.value = false
             res.onSuccess { savedId -> onDone(savedId) }.onFailure { err ->

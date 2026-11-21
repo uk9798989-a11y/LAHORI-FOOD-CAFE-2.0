@@ -26,43 +26,95 @@ enum class OrderType(val label: String) {
 
 enum class OrderStatus(
     val displayTitle: String,
+    val customerHeadline: String,
     val notificationTitle: String,
     val notificationMessage: String
 ) {
+    Pending(
+        displayTitle = "Waiting for Confirmation",
+        customerHeadline = "Waiting for Restaurant Confirmation",
+        notificationTitle = "Order Placed Successfully",
+        notificationMessage = "Waiting for restaurant confirmation."
+    ),
     Confirmed(
         displayTitle = "Order Confirmed",
-        notificationTitle = "Order Confirmed",
-        notificationMessage = "Your Lahori Food Cafe order is confirmed and sent to the kitchen."
+        customerHeadline = "Order Confirmed",
+        notificationTitle = "Order Confirmed!",
+        notificationMessage = "Order Confirmed! The restaurant has accepted your order."
     ),
     Preparing(
         displayTitle = "Preparing",
+        customerHeadline = "Your Order Is Being Prepared",
         notificationTitle = "Preparing Your Order",
-        notificationMessage = "Our chefs are firing up your crispy Lahori favorites!"
+        notificationMessage = "Your order is being freshly prepared in the kitchen."
     ),
-    Dispatched(
+    Ready(
+        displayTitle = "Ready",
+        customerHeadline = "Your Order Is Ready",
+        notificationTitle = "Order Ready",
+        notificationMessage = "Your order is freshly packed and ready!"
+    ),
+    OutForDelivery(
         displayTitle = "Out for Delivery",
+        customerHeadline = "Your Order Is on the Way",
         notificationTitle = "Out for Delivery",
         notificationMessage = "Your rider is on the way with your hot order!"
     ),
     Delivered(
         displayTitle = "Delivered",
-        notificationTitle = "Delivered",
+        customerHeadline = "Order Delivered",
+        notificationTitle = "Order Delivered",
         notificationMessage = "Order delivered! Enjoy your Lahori Food Cafe feast."
+    ),
+    Rejected(
+        displayTitle = "Rejected",
+        customerHeadline = "Order Rejected",
+        notificationTitle = "Order Rejected",
+        notificationMessage = "Unfortunately, the branch could not accept your order."
     );
+
+    val isTerminal: Boolean
+        get() = this == Delivered || this == Rejected
+
+    val isActive: Boolean
+        get() = !isTerminal
+
+    fun displayTitleFor(orderType: String): String {
+        val isPickup = orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
+        return when (this) {
+            OutForDelivery -> if (isPickup) "Ready for Pickup" else displayTitle
+            Delivered -> if (isPickup) "Picked Up" else displayTitle
+            else -> displayTitle
+        }
+    }
+
+    fun customerHeadlineFor(orderType: String): String {
+        val isPickup = orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
+        return when (this) {
+            OutForDelivery -> if (isPickup) "Ready for Pickup" else customerHeadline
+            Delivered -> if (isPickup) "Order Picked Up" else customerHeadline
+            else -> customerHeadline
+        }
+    }
 
     fun notificationTitleFor(orderType: String): String {
         val isPickup = orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
         return when (this) {
-            Dispatched -> if (isPickup) "Ready for Pickup" else notificationTitle
-            Delivered -> if (isPickup) "Picked Up" else notificationTitle
+            OutForDelivery -> if (isPickup) "Ready for Pickup" else notificationTitle
+            Delivered -> if (isPickup) "Order Picked Up" else notificationTitle
             else -> notificationTitle
         }
     }
 
-    fun notificationMessageFor(orderType: String): String {
+    fun notificationMessageFor(orderType: String, rejectionReason: String = ""): String {
         val isPickup = orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
         return when (this) {
-            Dispatched -> if (isPickup) {
+            Ready -> if (isPickup) {
+                "Your Lahori Food Cafe order is packed and ready at the pickup counter!"
+            } else {
+                "Your order is freshly packed and ready for rider handoff!"
+            }
+            OutForDelivery -> if (isPickup) {
                 "Your Lahori Food Cafe order is freshly packed and ready for pickup at the counter!"
             } else {
                 notificationMessage
@@ -72,30 +124,205 @@ enum class OrderStatus(
             } else {
                 notificationMessage
             }
+            Rejected -> if (rejectionReason.isNotBlank()) {
+                "Your order was rejected by the branch: $rejectionReason"
+            } else {
+                notificationMessage
+            }
             else -> notificationMessage
         }
     }
 
     fun nextStatus(): OrderStatus? = when (this) {
+        Pending -> Confirmed
         Confirmed -> Preparing
-        Preparing -> Dispatched
-        Dispatched -> Delivered
-        Delivered -> null
+        Preparing -> Ready
+        Ready -> OutForDelivery
+        OutForDelivery -> Delivered
+        Delivered, Rejected -> null
     }
 
     companion object {
+        /** Ordered happy-path progression stages shown on timelines. */
+        val trackingSteps: List<OrderStatus> = listOf(
+            Pending,
+            Confirmed,
+            Preparing,
+            Ready,
+            OutForDelivery,
+            Delivered
+        )
+
         fun fromString(raw: String?): OrderStatus {
             val normalized = raw?.trim().orEmpty()
-            if (normalized.equals("Ready for Pickup", ignoreCase = true) ||
-                normalized.equals("READY_FOR_PICKUP", ignoreCase = true)
-            ) {
-                return Dispatched
+            return when {
+                normalized.equals("Pending", ignoreCase = true) ||
+                    normalized.equals("Waiting for Confirmation", ignoreCase = true) -> Pending
+                normalized.equals("Confirmed", ignoreCase = true) -> Confirmed
+                normalized.equals("Preparing", ignoreCase = true) -> Preparing
+                normalized.equals("Ready", ignoreCase = true) -> Ready
+                normalized.equals("OutForDelivery", ignoreCase = true) ||
+                    normalized.equals("Out for Delivery", ignoreCase = true) ||
+                    normalized.equals("OUT_FOR_DELIVERY", ignoreCase = true) ||
+                    normalized.equals("Dispatched", ignoreCase = true) ||
+                    normalized.equals("Ready for Pickup", ignoreCase = true) ||
+                    normalized.equals("READY_FOR_PICKUP", ignoreCase = true) -> OutForDelivery
+                normalized.equals("Delivered", ignoreCase = true) ||
+                    normalized.equals("Picked Up", ignoreCase = true) -> Delivered
+                normalized.equals("Rejected", ignoreCase = true) ||
+                    normalized.equals("Cancelled", ignoreCase = true) -> Rejected
+                else -> entries.firstOrNull { it.name.equals(normalized, ignoreCase = true) } ?: Pending
             }
-            if (normalized.equals("Picked Up", ignoreCase = true)) {
-                return Delivered
-            }
-            return entries.firstOrNull { it.name.equals(normalized, ignoreCase = true) } ?: Confirmed
         }
+    }
+}
+
+const val DEFAULT_FREE_DELIVERY_MIN_ORDER_PKR = 800L
+const val DEFAULT_BRANCH_DELIVERY_FEE_PKR = 150L
+const val DEFAULT_PAYMENT_METHOD = "Cash on Delivery"
+
+@Keep
+@IgnoreExtraProperties
+data class DeliverySettings(
+    @DocumentId val id: String = "delivery",
+    val freeDeliveryMinOrderPkr: Long = DEFAULT_FREE_DELIVERY_MIN_ORDER_PKR,
+    val defaultDeliveryFeePkr: Long = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
+    val updatedBy: String = "",
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class BranchMenuOverride(
+    @DocumentId val id: String = "",
+    val itemId: String = "",
+    val branchId: String = "",
+    val pricePkr: Long = 0L,
+    val available: Boolean = true,
+    val sizePrices: Map<String, Long> = emptyMap(),
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+data class OrderPricingBreakdown(
+    val subtotalPkr: Long,
+    val discountPkr: Long,
+    val deliveryFeePkr: Long,
+    val finalTotalPkr: Long,
+    val freeDeliveryMinOrderPkr: Long,
+    val branchDeliveryFeePkr: Long,
+    val freeDeliveryUnlocked: Boolean,
+    val remainingForFreeDeliveryPkr: Long
+) {
+    val totalPkr: Long get() = finalTotalPkr
+    val isFreeDelivery: Boolean get() = freeDeliveryUnlocked
+}
+
+object OrderPricingEngine {
+    fun applyBranchOverrides(
+        globalItems: List<MenuItem>,
+        overrides: List<BranchMenuOverride>
+    ): List<MenuItem> {
+        if (overrides.isEmpty()) return globalItems
+        val overrideByItemId = overrides.associateBy { it.itemId.ifBlank { it.id } }
+        return globalItems.map { item ->
+            val ov = overrideByItemId[item.id]
+            if (ov != null) {
+                item.copy(
+                    pricePkr = if (ov.pricePkr > 0L) ov.pricePkr else item.pricePkr,
+                    available = ov.available
+                )
+            } else {
+                item
+            }
+        }
+    }
+
+    fun calculate(
+        subtotalPkr: Long,
+        discountPkr: Long = 0L,
+        orderType: OrderType = OrderType.DELIVERY,
+        branchDeliveryFeePkr: Long = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
+        freeDeliveryMinOrderPkr: Long = DEFAULT_FREE_DELIVERY_MIN_ORDER_PKR
+    ): OrderPricingBreakdown {
+        val safeSubtotal = subtotalPkr.coerceAtLeast(0L)
+        val safeThreshold = freeDeliveryMinOrderPkr.coerceAtLeast(0L)
+        val safeBranchFee = branchDeliveryFeePkr.coerceAtLeast(0L)
+        val safeDiscount = discountPkr.coerceIn(0L, safeSubtotal)
+
+        val isDelivery = orderType == OrderType.DELIVERY
+        val unlocked = !isDelivery || safeSubtotal >= safeThreshold
+        val appliedDeliveryFee = when {
+            !isDelivery -> 0L
+            safeSubtotal <= 0L -> safeBranchFee
+            safeSubtotal >= safeThreshold -> 0L
+            else -> safeBranchFee
+        }
+        val remaining = if (!isDelivery || safeSubtotal >= safeThreshold) {
+            0L
+        } else {
+            (safeThreshold - safeSubtotal).coerceAtLeast(0L)
+        }
+        val finalTotal = if (safeSubtotal <= 0L) {
+            0L
+        } else {
+            (safeSubtotal - safeDiscount + appliedDeliveryFee).coerceAtLeast(0L)
+        }
+
+        return OrderPricingBreakdown(
+            subtotalPkr = safeSubtotal,
+            discountPkr = safeDiscount,
+            deliveryFeePkr = if (safeSubtotal <= 0L && isDelivery) 0L else appliedDeliveryFee,
+            finalTotalPkr = finalTotal,
+            freeDeliveryMinOrderPkr = safeThreshold,
+            branchDeliveryFeePkr = safeBranchFee,
+            freeDeliveryUnlocked = unlocked && safeSubtotal > 0L,
+            remainingForFreeDeliveryPkr = remaining
+        )
+    }
+
+    fun calculate(
+        subtotalPkr: Long,
+        discountPkr: Long = 0L,
+        orderType: OrderType = OrderType.DELIVERY,
+        branch: CafeBranch?,
+        settings: DeliverySettings = DeliverySettings()
+    ): OrderPricingBreakdown = calculate(
+        subtotalPkr = subtotalPkr,
+        discountPkr = discountPkr,
+        orderType = orderType,
+        branchDeliveryFeePkr = branch?.deliveryFeePkr ?: settings.defaultDeliveryFeePkr,
+        freeDeliveryMinOrderPkr = settings.freeDeliveryMinOrderPkr
+    )
+}
+
+object NotificationRoutingPolicy {
+    /**
+     * Strict notification routing rule:
+     * - ONLY the BranchAdmin assigned to [orderBranchId] receives new-order alerts.
+     * - SuperAdmin NEVER receives new-order popups, sounds, or push notifications.
+     * - Other BranchAdmins and Customers NEVER receive new-order alerts.
+     */
+    fun shouldReceiveNewOrderAlert(
+        recipientRole: UserRole,
+        recipientBranchId: String,
+        orderBranchId: String,
+        userEmail: String = ""
+    ): Boolean {
+        if (userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) return false
+        if (recipientRole != UserRole.BranchAdmin) return false
+        val cleanRecipientBranch = recipientBranchId.trim()
+        val cleanOrderBranch = orderBranchId.trim()
+        return cleanRecipientBranch.isNotEmpty() && cleanRecipientBranch == cleanOrderBranch
+    }
+
+    fun shouldRunBackgroundOrderMonitor(
+        role: UserRole,
+        assignedBranchId: String,
+        userEmail: String = ""
+    ): Boolean {
+        if (userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) return false
+        return role == UserRole.BranchAdmin && assignedBranchId.trim().isNotEmpty()
     }
 }
 
@@ -112,6 +339,7 @@ data class CafeBranch(
     val mapUrl: String = "",
     val openHours: String = "12:00 PM - 2:00 AM",
     val deliveryRadiusKm: Long = 15L,
+    val deliveryFeePkr: Long = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
     val active: Boolean = true,
     val sortOrder: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -146,6 +374,7 @@ object BranchDirectory {
         mapUrl = "https://share.google/P92yinaSqd7Dz0anJ",
         openHours = "12:00 PM - 2:00 AM",
         deliveryRadiusKm = 15L,
+        deliveryFeePkr = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
         active = true,
         sortOrder = 1L
     )
@@ -170,6 +399,7 @@ object BranchDirectory {
         mapUrl = "https://share.google/XrwRlyd2jYQs8wbzl",
         openHours = "12:00 PM - 2:00 AM",
         deliveryRadiusKm = 15L,
+        deliveryFeePkr = DEFAULT_BRANCH_DELIVERY_FEE_PKR,
         active = true,
         sortOrder = 2L
     )
@@ -389,6 +619,7 @@ data class CafeOrder(
     val deliveryAddress: String = "",
     val deliveryLatitude: Double = 0.0,
     val deliveryLongitude: Double = 0.0,
+    val paymentMethod: String = DEFAULT_PAYMENT_METHOD,
     val branchId: String = BranchDirectory.branch1.id,
     val branchName: String = BranchDirectory.branch1.name,
     val branchAdminEmails: List<String> = emptyList(),
@@ -399,7 +630,10 @@ data class CafeOrder(
     val subtotalPkr: Long = 0L,
     val deliveryFeePkr: Long = 0L,
     val totalPkr: Long = 0L,
-    val status: String = OrderStatus.Confirmed.name,
+    val status: String = OrderStatus.Pending.name,
+    val confirmedAt: Timestamp? = null,
+    val rejectedAt: Timestamp? = null,
+    val rejectionReason: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {

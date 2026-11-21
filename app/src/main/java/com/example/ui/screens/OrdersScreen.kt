@@ -164,10 +164,10 @@ fun OrdersScreen(
                 is UiState.Success -> {
                     val orders = ordersState.data
                     val activeOrders = remember(orders) {
-                        orders.filter { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
+                        orders.filter { OrderStatus.fromString(it.status).isActive }
                     }
                     val deliveredOrders = remember(orders) {
-                        orders.filter { OrderStatus.fromString(it.status) == OrderStatus.Delivered }
+                        orders.filter { OrderStatus.fromString(it.status).isTerminal }
                     }
                     val filteredOrders = remember(orders, activeOrders, deliveredOrders, selectedFilter) {
                         when (selectedFilter) {
@@ -349,21 +349,23 @@ fun OrderSummaryCard(
     val isPickup = order.orderType.equals(OrderType.PICKUP.name, ignoreCase = true)
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val badgeColor = when (status) {
+        OrderStatus.Pending -> if (isDark) LahoriGold else Color(0xFFB45309)
         OrderStatus.Confirmed -> if (isDark) Color(0xFFFF6B81) else LahoriRed
         OrderStatus.Preparing -> if (isDark) Color(0xFFFBBF24) else LahoriWarning
-        OrderStatus.Dispatched -> if (isDark) Color(0xFF60A5FA) else Color(0xFF0066CC)
+        OrderStatus.Ready -> if (isDark) Color(0xFF34D399) else Color(0xFF047857)
+        OrderStatus.OutForDelivery -> if (isDark) Color(0xFF60A5FA) else Color(0xFF0066CC)
         OrderStatus.Delivered -> if (isDark) Color(0xFF4ADE80) else LahoriSuccess
+        OrderStatus.Rejected -> LahoriRed
     }
-    val statusBadgeText = when (status) {
-        OrderStatus.Dispatched -> if (isPickup) "READY FOR PICKUP" else status.displayTitle.uppercase()
-        OrderStatus.Delivered -> if (isPickup) "PICKED UP" else status.displayTitle.uppercase()
-        else -> status.displayTitle.uppercase()
-    }
+    val statusBadgeText = status.displayTitleFor(order.orderType).uppercase()
     val targetProgress = when (status) {
-        OrderStatus.Confirmed -> 0.25f
+        OrderStatus.Pending -> 0.14f
+        OrderStatus.Confirmed -> 0.30f
         OrderStatus.Preparing -> 0.52f
-        OrderStatus.Dispatched -> 0.80f
+        OrderStatus.Ready -> 0.70f
+        OrderStatus.OutForDelivery -> 0.86f
         OrderStatus.Delivered -> 1.0f
+        OrderStatus.Rejected -> 0.0f
     }
     val animatedProgress by animateFloatAsState(
         targetValue = targetProgress,
@@ -375,8 +377,12 @@ fun OrderSummaryCard(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(
-            width = if (status != OrderStatus.Delivered && showStepper) 1.5.dp else 1.dp,
-            color = if (status != OrderStatus.Delivered && showStepper) LahoriRed.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outline
+            width = if (status.isActive && showStepper) 1.5.dp else 1.dp,
+            color = when {
+                status == OrderStatus.Rejected -> LahoriRed.copy(alpha = 0.65f)
+                status.isActive && showStepper -> LahoriRed.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.outline
+            }
         ),
         shadowElevation = 2.dp,
         modifier = modifier
@@ -442,7 +448,33 @@ fun OrderSummaryCard(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            if (showStepper) {
+            if (status == OrderStatus.Pending) {
+                Text(
+                    text = "Order Placed Successfully • Waiting for restaurant confirmation.",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (isDark) LahoriGold else Color(0xFFB45309)
+                )
+            } else if (status == OrderStatus.Rejected) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = LahoriRed.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, LahoriRed.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (order.rejectionReason.isNotBlank()) {
+                            "Order Rejected: ${order.rejectionReason}"
+                        } else {
+                            "Order Rejected by branch."
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = LahoriRed,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
+            if (showStepper && status != OrderStatus.Rejected) {
                 LinearProgressIndicator(
                     progress = { animatedProgress },
                     color = if (status == OrderStatus.Delivered) LahoriSuccess else LahoriRed,
@@ -481,7 +513,7 @@ fun OrderSummaryCard(
                 )
             }
 
-            if (onTrackOrder != null && status != OrderStatus.Delivered) {
+            if (onTrackOrder != null && status.isActive) {
                 Button(
                     onClick = onTrackOrder,
                     shape = RoundedCornerShape(10.dp),
@@ -591,8 +623,23 @@ fun OrderStatusProgressBar(
     currentStatus: OrderStatus,
     isPickup: Boolean = false
 ) {
-    val steps = OrderStatus.entries
-    val currentIndex = steps.indexOf(currentStatus)
+    if (currentStatus == OrderStatus.Rejected) {
+        Surface(
+            color = LahoriRed.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "ORDER REJECTED BY RESTAURANT",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                color = LahoriRed,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+        return
+    }
+    val steps = OrderStatus.trackingSteps
+    val currentIndex = steps.indexOf(currentStatus).coerceAtLeast(0)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -608,7 +655,7 @@ fun OrderStatusProgressBar(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(20.dp)
+                        .size(18.dp)
                         .clip(CircleShape)
                         .background(if (reached) LahoriRed else MaterialTheme.colorScheme.outline),
                     contentAlignment = Alignment.Center
@@ -618,19 +665,22 @@ fun OrderStatusProgressBar(
                             imageVector = Icons.Filled.CheckCircle,
                             contentDescription = null,
                             tint = LahoriWhite,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(12.dp)
                         )
                     }
                 }
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = when (step) {
-                        OrderStatus.Confirmed -> "Confirmed"
-                        OrderStatus.Preparing -> "Preparing"
-                        OrderStatus.Dispatched -> if (isPickup) "Ready" else "Out"
-                        OrderStatus.Delivered -> if (isPickup) "Picked Up" else "Delivered"
+                        OrderStatus.Pending -> "Pending"
+                        OrderStatus.Confirmed -> "Confirm"
+                        OrderStatus.Preparing -> "Cooking"
+                        OrderStatus.Ready -> "Ready"
+                        OrderStatus.OutForDelivery -> if (isPickup) "Pickup" else "On Way"
+                        OrderStatus.Delivered -> if (isPickup) "Done" else "Delivered"
+                        OrderStatus.Rejected -> "Rejected"
                     },
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
                     color = if (reached) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
@@ -691,7 +741,7 @@ fun OrderDetailsBottomSheet(
 
             OrderStatusProgressBar(currentStatus = status, isPickup = isPickup)
 
-            if (onTrackLive != null && status != OrderStatus.Delivered) {
+            if (onTrackLive != null && status.isActive) {
                 Button(
                     onClick = onTrackLive,
                     shape = RoundedCornerShape(12.dp),
@@ -704,6 +754,26 @@ fun OrderDetailsBottomSheet(
                     Icon(Icons.Filled.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("OPEN LIVE TRACKER", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+
+            if (status == OrderStatus.Rejected) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = LahoriRed.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, LahoriRed),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (order.rejectionReason.isNotBlank()) {
+                            "Rejection Reason: ${order.rejectionReason}"
+                        } else {
+                            "This order was rejected by the branch."
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = LahoriRed,
+                        modifier = Modifier.padding(12.dp)
+                    )
                 }
             }
 
@@ -735,6 +805,11 @@ fun OrderDetailsBottomSheet(
                     Text(
                         text = "Recipient: ${order.customerName} (${order.customerPhone.ifBlank { "No phone" }})",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Payment: ${order.paymentMethod.ifBlank { "Cash on Delivery" }}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     if (order.guestCheckout && order.guestSessionId.isNotBlank()) {

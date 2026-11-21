@@ -63,7 +63,39 @@ service cloud.firestore {
              get(/databases/$(database)/documents/branch_admins/$(request.auth.token.email.lower())).data.branchId == branchId;
     }
 
+    // Authoritative Free Delivery Threshold & Branch Delivery Fee Lookups
+    function freeDeliveryThreshold() {
+      return exists(/databases/$(database)/documents/app_settings/delivery) &&
+             'freeDeliveryMinOrderPkr' in get(/databases/$(database)/documents/app_settings/delivery).data &&
+             get(/databases/$(database)/documents/app_settings/delivery).data.freeDeliveryMinOrderPkr is int
+        ? get(/databases/$(database)/documents/app_settings/delivery).data.freeDeliveryMinOrderPkr
+        : 800;
+    }
+
+    function branchDeliveryFee(branchId) {
+      return exists(/databases/$(database)/documents/branches/$(branchId)) &&
+             'deliveryFeePkr' in get(/databases/$(database)/documents/branches/$(branchId)).data &&
+             get(/databases/$(database)/documents/branches/$(branchId)).data.deliveryFeePkr is int
+        ? get(/databases/$(database)/documents/branches/$(branchId)).data.deliveryFeePkr
+        : 150;
+    }
+
+    function expectedDeliveryFee(data) {
+      return data.orderType == 'PICKUP'
+        ? 0
+        : (data.subtotalPkr >= freeDeliveryThreshold() ? 0 : branchDeliveryFee(data.branchId));
+    }
+
     // 3. Entity Validation Blueprints
+    function isValidDeliverySettings(data) {
+      return data.freeDeliveryMinOrderPkr is int &&
+             data.freeDeliveryMinOrderPkr >= 0 &&
+             data.freeDeliveryMinOrderPkr <= 100000 &&
+             (!('defaultDeliveryFeePkr' in data) ||
+              (data.defaultDeliveryFeePkr is int && data.defaultDeliveryFeePkr >= 0 && data.defaultDeliveryFeePkr <= 5000)) &&
+             (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120));
+    }
+
     function isValidBranch(data) {
       return data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
              data.shortLabel is string && data.shortLabel.size() >= 2 && data.shortLabel.size() <= 40 &&
@@ -75,8 +107,17 @@ service cloud.firestore {
              (!('mapUrl' in data) || (data.mapUrl is string && data.mapUrl.size() <= 300)) &&
              (!('openHours' in data) || (data.openHours is string && data.openHours.size() <= 60)) &&
              (!('deliveryRadiusKm' in data) || (data.deliveryRadiusKm is int && data.deliveryRadiusKm >= 1 && data.deliveryRadiusKm <= 100)) &&
+             (!('deliveryFeePkr' in data) || (data.deliveryFeePkr is int && data.deliveryFeePkr >= 0 && data.deliveryFeePkr <= 5000)) &&
              data.active is bool &&
              data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000;
+    }
+
+    function isValidBranchMenuOverride(data, branchId, itemId) {
+      return data.itemId == itemId &&
+             data.branchId == branchId &&
+             data.pricePkr is int && data.pricePkr > 0 && data.pricePkr <= 100000 &&
+             data.available is bool &&
+             (!('sizePrices' in data) || (data.sizePrices is map && data.sizePrices.size() <= 12));
     }
 
     function isValidMenuItem(data) {
@@ -155,6 +196,7 @@ service cloud.firestore {
              data.deliveryAddress is string && data.deliveryAddress.size() <= 350 &&
              (!('deliveryLatitude' in data) || (data.deliveryLatitude is number && data.deliveryLatitude >= -90 && data.deliveryLatitude <= 90)) &&
              (!('deliveryLongitude' in data) || (data.deliveryLongitude is number && data.deliveryLongitude >= -180 && data.deliveryLongitude <= 180)) &&
+             (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() >= 1 && data.paymentMethod.size() <= 40)) &&
              isValidBranchId(data.branchId) &&
              data.branchName is string && data.branchName.size() >= 1 && data.branchName.size() <= 80 &&
              data.branchAdminEmails is list && data.branchAdminEmails.size() <= 50 &&
@@ -162,11 +204,22 @@ service cloud.firestore {
              data.items is list && data.items.size() >= 1 && data.items.size() <= 30 && data.items[0] is map &&
              data.itemsSummary is string && data.itemsSummary.size() >= 1 && data.itemsSummary.size() <= 300 &&
              data.promoCode is string && data.promoCode.size() <= 30 &&
-             data.discountPkr is int && data.discountPkr >= 0 && data.discountPkr <= 1000000 &&
+             data.discountPkr is int && data.discountPkr >= 0 && data.discountPkr <= data.subtotalPkr &&
              data.subtotalPkr is int && data.subtotalPkr > 0 && data.subtotalPkr <= 1000000 &&
              data.deliveryFeePkr is int && data.deliveryFeePkr >= 0 && data.deliveryFeePkr <= 10000 &&
-             data.totalPkr is int && data.totalPkr > 0 && data.totalPkr <= 1010000 &&
-             data.status in ['Confirmed', 'Preparing', 'Dispatched', 'Delivered'];
+             data.totalPkr is int && data.totalPkr >= 0 && data.totalPkr <= 1010000 &&
+             data.status in ['Pending', 'Confirmed', 'Preparing', 'Ready', 'OutForDelivery', 'Dispatched', 'Delivered', 'Rejected'] &&
+             (!('confirmedAt' in data) || data.confirmedAt == null || (data.confirmedAt is timestamp && data.confirmedAt <= request.time)) &&
+             (!('rejectedAt' in data) || data.rejectedAt == null || (data.rejectedAt is timestamp && data.rejectedAt <= request.time)) &&
+             (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 240));
+    }
+
+    function isValidOrderStatusTransition(prev, next) {
+      return (prev == 'Pending' && (next == 'Confirmed' || next == 'Rejected')) ||
+             (prev == 'Confirmed' && (next == 'Preparing' || next == 'Ready' || next == 'OutForDelivery' || next == 'Dispatched' || next == 'Delivered')) ||
+             (prev == 'Preparing' && (next == 'Ready' || next == 'OutForDelivery' || next == 'Dispatched' || next == 'Delivered')) ||
+             (prev == 'Ready' && (next == 'OutForDelivery' || next == 'Dispatched' || next == 'Delivered')) ||
+             ((prev == 'OutForDelivery' || prev == 'Dispatched') && next == 'Delivered');
     }
 
     function isValidReview(data) {
@@ -206,7 +259,7 @@ service cloud.firestore {
              data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80 &&
              data.customerPhone is string && data.customerPhone.size() <= 30 &&
              data.deliveryAddress is string && data.deliveryAddress.size() <= 350 &&
-             data.totalPkr is int && data.totalPkr > 0 && data.totalPkr <= 1010000 &&
+             data.totalPkr is int && data.totalPkr >= 0 && data.totalPkr <= 1010000 &&
              data.orderType in ['DELIVERY', 'PICKUP'] &&
              data.itemsSummary is string && data.itemsSummary.size() >= 1 && data.itemsSummary.size() <= 300 &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
@@ -217,7 +270,23 @@ service cloud.firestore {
 
     // 4. Collection Rules
 
-    // Branches: Readable by signed-in users, created/updated/deleted ONLY by SuperAdmin
+    // Global App Settings (e.g. /app_settings/delivery with Rs. 800 free delivery threshold):
+    // Readable by all signed-in users; editable ONLY by SuperAdmin (NEVER BranchAdmin or Customer).
+    match /app_settings/{settingId} {
+      allow list, get: if isSignedIn() && isValidId(settingId);
+
+      allow create, update: if isSuperAdmin() &&
+                               settingId == 'delivery' &&
+                               incoming().keys().hasAll(['freeDeliveryMinOrderPkr', 'updatedAt']) &&
+                               incoming().keys().hasOnly(['freeDeliveryMinOrderPkr', 'defaultDeliveryFeePkr', 'updatedBy', 'updatedAt']) &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                               isValidDeliverySettings(incoming());
+
+      allow delete: if false;
+    }
+
+    // Branches: Readable by signed-in users.
+    // SuperAdmin creates/updates/deletes all fields; assigned BranchAdmin can ONLY update deliveryFeePkr for own branch.
     match /branches/{branchId} {
       allow list: if isSignedIn();
       allow get: if isSignedIn() && isValidBranchId(branchId);
@@ -225,22 +294,54 @@ service cloud.firestore {
       allow create: if isSuperAdmin() &&
                        isValidBranchId(branchId) &&
                        incoming().keys().hasAll(['name', 'shortLabel', 'shortAddress', 'areas', 'active', 'sortOrder', 'createdAt', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['name', 'shortLabel', 'shortAddress', 'areas', 'latitude', 'longitude', 'mapUrl', 'openHours', 'deliveryRadiusKm', 'active', 'sortOrder', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['name', 'shortLabel', 'shortAddress', 'areas', 'latitude', 'longitude', 'mapUrl', 'openHours', 'deliveryRadiusKm', 'deliveryFeePkr', 'active', 'sortOrder', 'createdAt', 'updatedAt']) &&
                        incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
                        isValidBranch(incoming());
 
-      allow update: if isSuperAdmin() &&
-                       isValidBranchId(branchId) &&
+      allow update: if isValidBranchId(branchId) &&
                        isValidBranch(incoming()) &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'shortLabel', 'shortAddress', 'areas', 'latitude', 'longitude', 'mapUrl', 'openHours', 'deliveryRadiusKm', 'active', 'sortOrder', 'updatedAt']);
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time && (
+                         (isSuperAdmin() &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'shortLabel', 'shortAddress', 'areas', 'latitude', 'longitude', 'mapUrl', 'openHours', 'deliveryRadiusKm', 'deliveryFeePkr', 'active', 'sortOrder', 'updatedAt'])) ||
+                         (isBranchAdminFor(branchId) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['deliveryFeePkr', 'updatedAt']))
+                       );
 
       allow delete: if isSuperAdmin() && isValidBranchId(branchId);
+
+      // Independent Branch Menu Price & Availability Overrides:
+      // Readable by signed-in users; editable ONLY by SuperAdmin or the BranchAdmin assigned to THIS branchId.
+      match /menu_overrides/{itemId} {
+        allow list: if isSignedIn() && isValidBranchId(branchId);
+        allow get: if isSignedIn() && isValidBranchId(branchId) && isValidId(itemId);
+
+        allow create: if (isSuperAdmin() || isBranchAdminFor(branchId)) &&
+                         isValidBranchId(branchId) &&
+                         isValidId(itemId) &&
+                         incoming().keys().hasAll(['itemId', 'branchId', 'pricePkr', 'available', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['itemId', 'branchId', 'pricePkr', 'available', 'sizePrices', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidBranchMenuOverride(incoming(), branchId, itemId);
+
+        allow update: if (isSuperAdmin() || isBranchAdminFor(branchId)) &&
+                         isValidBranchId(branchId) &&
+                         isValidId(itemId) &&
+                         isValidBranchMenuOverride(incoming(), branchId, itemId) &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['pricePkr', 'available', 'sizePrices', 'updatedAt']);
+
+        allow delete: if (isSuperAdmin() || isBranchAdminFor(branchId)) &&
+                         isValidBranchId(branchId) &&
+                         isValidId(itemId);
+      }
     }
 
     // Global Menu Items: Readable by signed-in users, writable ONLY by SuperAdmin
+    // Branch Admins NEVER mutate global prices — they use /branches/{branchId}/menu_overrides/{itemId}.
     match /menu_items/{itemId} {
       allow list: if isSignedIn();
       allow get: if isSignedIn() && isValidId(itemId);
@@ -448,7 +549,10 @@ service cloud.firestore {
       allow delete: if isSuperAdmin() && isValidStaffDocId(adminId);
     }
 
-    // Orders (Customer owns own orders; BranchAdmin sees ONLY assigned branchId orders; SuperAdmin sees all)
+    // Orders:
+    // - Customer reads own orders & creates new orders STRICTLY in 'Pending' status with verified delivery fee & total.
+    // - Assigned BranchAdmin reads ONLY own branchId orders, accepts/rejects Pending orders, and progresses active orders.
+    // - SuperAdmin reads all branch orders; cannot bypass Pending approval (assigned BranchAdmin owns approval), can assist active progression.
     match /orders/{orderId} {
       allow list: if isSignedIn() && (
         resource.data.userId == request.auth.uid ||
@@ -465,32 +569,46 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
                        isValidId(orderId) &&
                        incoming().keys().hasAll(['userId', 'guestSessionId', 'guestCheckout', 'customerName', 'customerEmail', 'customerPhone', 'orderType', 'deliveryAddress', 'branchId', 'branchName', 'branchAdminEmails', 'items', 'itemsSummary', 'promoCode', 'discountPkr', 'subtotalPkr', 'deliveryFeePkr', 'totalPkr', 'status', 'createdAt', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['userId', 'guestSessionId', 'guestCheckout', 'customerName', 'customerEmail', 'customerPhone', 'orderType', 'deliveryAddress', 'deliveryLatitude', 'deliveryLongitude', 'branchId', 'branchName', 'branchAdminEmails', 'items', 'itemsSummary', 'promoCode', 'discountPkr', 'subtotalPkr', 'deliveryFeePkr', 'totalPkr', 'status', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'guestSessionId', 'guestCheckout', 'customerName', 'customerEmail', 'customerPhone', 'orderType', 'deliveryAddress', 'deliveryLatitude', 'deliveryLongitude', 'paymentMethod', 'branchId', 'branchName', 'branchAdminEmails', 'items', 'itemsSummary', 'promoCode', 'discountPkr', 'subtotalPkr', 'deliveryFeePkr', 'totalPkr', 'status', 'rejectionReason', 'createdAt', 'updatedAt']) &&
                        incoming().userId == request.auth.uid &&
-                       incoming().status == 'Confirmed' &&
+                       incoming().status == 'Pending' &&
+                       incoming().branchAdminEmails.size() == 0 &&
+                       !('confirmedAt' in incoming()) &&
+                       !('rejectedAt' in incoming()) &&
+                       incoming().deliveryFeePkr == expectedDeliveryFee(incoming()) &&
+                       incoming().totalPkr == (incoming().subtotalPkr - incoming().discountPkr + incoming().deliveryFeePkr) &&
                        incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
                        isValidOrder(incoming());
 
-      // Status updates restricted to SuperAdmin or active BranchAdmin for that branch; locked once Delivered
+      // Status updates strictly enforced by role, branchId, and state machine.
+      // affectedKeys().hasOnly(...) guarantees items, subtotalPkr, deliveryFeePkr, discountPkr,
+      // totalPkr, userId, branchId, branchAdminEmails, and createdAt cannot be altered.
       allow update: if isSignedIn() &&
                        isValidId(orderId) &&
-                       isValidOrder(incoming()) &&
-                       incoming().userId == existing().userId &&
-                       incoming().createdAt == existing().createdAt &&
-                       incoming().branchId == existing().branchId &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
                        (
-                         isSuperAdmin() ||
-                         isBranchAdminFor(existing().branchId)
-                       ) &&
-                       (existing().status != 'Delivered' || isSuperAdmin()) &&
-                       (
-                         (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
-                          incoming().branchAdminEmails == existing().branchAdminEmails) ||
-                         (isSuperAdmin() &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['branchAdminEmails', 'updatedAt']) &&
-                          incoming().status == existing().status)
+                         // 1. Accept Pending -> Confirmed (ONLY assigned Branch Admin for this branchId)
+                         (existing().status == 'Pending' &&
+                          incoming().status == 'Confirmed' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'confirmedAt', 'updatedAt']) &&
+                          incoming().confirmedAt is timestamp && incoming().confirmedAt <= request.time &&
+                          isBranchAdminFor(existing().branchId)) ||
+                         // 2. Reject Pending -> Rejected (ONLY assigned Branch Admin for this branchId)
+                         (existing().status == 'Pending' &&
+                          incoming().status == 'Rejected' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'rejectedAt', 'rejectionReason', 'updatedAt']) &&
+                          incoming().rejectedAt is timestamp && incoming().rejectedAt <= request.time &&
+                          (!('rejectionReason' in incoming()) || (incoming().rejectionReason is string && incoming().rejectionReason.size() <= 240)) &&
+                          isBranchAdminFor(existing().branchId)) ||
+                         // 3. Progress active order (Confirmed -> Preparing -> Ready -> OutForDelivery -> Delivered)
+                         // Locked once Delivered or Rejected
+                         (existing().status != 'Pending' &&
+                          existing().status != 'Delivered' &&
+                          existing().status != 'Rejected' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                          isValidOrderStatusTransition(existing().status, incoming().status) &&
+                          (isBranchAdminFor(existing().branchId) || isSuperAdmin()))
                        );
 
       allow delete: if isSuperAdmin() && isValidId(orderId);

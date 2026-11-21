@@ -48,6 +48,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,8 @@ import com.example.data.attemptAutoSignIn
 import com.example.data.authStateFlow
 import com.example.data.onGoogleSignInClicked
 import com.example.data.signOutUser
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import com.example.model.BranchDirectory
 import com.example.model.OrderStatus
@@ -577,7 +580,7 @@ private fun GuestCafeShell(
                         landmark = saved.landmark,
                         branchId = saved.branchId
                     )
-                    snackbarHostState.showSnackbar("Address saved! Serving branch: ${saved.branchName} • FREE Delivery")
+                    snackbarHostState.showSnackbar("Address saved! Serving branch: ${saved.branchName}")
                 }
             },
             onDeleteAddress = { addrId ->
@@ -675,7 +678,7 @@ private fun GuestCafeShell(
                     )
                 }
             },
-            onPlaceOrder = { name, phone, deliveryAddr, deliveryLat, deliveryLng, _ ->
+            onPlaceOrder = { name, phone, deliveryAddr, deliveryLat, deliveryLng, _, paymentMethod ->
                 sessionCart.setPendingGuestOrder(
                     PendingGuestOrder(
                         cartItems = sessionState.cartItems,
@@ -688,7 +691,8 @@ private fun GuestCafeShell(
                         customerPhone = phone,
                         guestSessionId = sessionState.guestSessionId,
                         promoCode = sessionState.appliedPromoLabel,
-                        discountPkr = sessionState.appliedDiscountPkr
+                        discountPkr = sessionState.appliedDiscountPkr,
+                        paymentMethod = paymentMethod
                     )
                 )
                 showBucketSheet = false
@@ -737,7 +741,10 @@ private fun AuthenticatedCafeShell(
 
     val sessionState by sessionCart.state.collectAsStateWithLifecycle()
     val branchesList by viewModel.branchesList.collectAsStateWithLifecycle()
+    val deliverySettings by viewModel.deliverySettings.collectAsStateWithLifecycle()
     val menuState by viewModel.menuState.collectAsStateWithLifecycle()
+    val effectiveMenuState by viewModel.effectiveMenuState.collectAsStateWithLifecycle()
+    val branchAdminMenuOverrides by viewModel.branchAdminMenuOverrides.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
     val savedAddresses by viewModel.savedAddresses.collectAsStateWithLifecycle()
     val effectiveRole by viewModel.effectiveRole.collectAsStateWithLifecycle()
@@ -757,8 +764,11 @@ private fun AuthenticatedCafeShell(
     val pendingSurveyOrder by viewModel.pendingSurveyOrder.collectAsStateWithLifecycle()
     val isSubmittingReview by viewModel.isSubmittingReview.collectAsStateWithLifecycle()
     val isSubmittingFeedback by viewModel.isSubmittingFeedback.collectAsStateWithLifecycle()
+    val isPlacingOrder by viewModel.isPlacingOrder.collectAsStateWithLifecycle()
     val isSavingStaff by viewModel.isSavingStaff.collectAsStateWithLifecycle()
     val isSavingBranch by viewModel.isSavingBranch.collectAsStateWithLifecycle()
+    val isSavingDeliverySettings by viewModel.isSavingDeliverySettings.collectAsStateWithLifecycle()
+    val isSavingBranchMenuOverride by viewModel.isSavingBranchMenuOverride.collectAsStateWithLifecycle()
     val isSavingMenuItem by viewModel.isSavingMenuItem.collectAsStateWithLifecycle()
     val isSavingBranchPromo by viewModel.isSavingBranchPromo.collectAsStateWithLifecycle()
     val isSavingBranchBanner by viewModel.isSavingBranchBanner.collectAsStateWithLifecycle()
@@ -767,6 +777,7 @@ private fun AuthenticatedCafeShell(
     val latestActiveOrder by viewModel.latestActiveOrder.collectAsStateWithLifecycle()
     val fcmTokenRegistered by viewModel.fcmTokenRegistered.collectAsStateWithLifecycle()
     val newBranchOrderAlert by viewModel.newBranchOrderAlert.collectAsStateWithLifecycle()
+    val newBranchOrderPopupQueue by viewModel.newBranchOrderPopupQueue.collectAsStateWithLifecycle()
     val adminNotifications by viewModel.adminNotifications.collectAsStateWithLifecycle()
     val unreadAdminNotificationCount by viewModel.unreadAdminNotificationCount.collectAsStateWithLifecycle()
     val deliveredPopupQueue by viewModel.deliveredPopupQueue.collectAsStateWithLifecycle()
@@ -774,6 +785,16 @@ private fun AuthenticatedCafeShell(
         .collectAsStateWithLifecycle(initialValue = true)
     val actionError by viewModel.actionError.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
+
+    // Sync active role session for FCM service background filtering (Super Admin NEVER gets new-order pushes)
+    LaunchedEffect(effectiveRole, branchAdminAssignment, userEmail) {
+        AddressAndAlertPreferences.saveActiveRoleSession(
+            context = context,
+            role = effectiveRole,
+            assignedBranchId = branchAdminAssignment?.branchId.orEmpty(),
+            email = userEmail
+        )
+    }
 
     // Auto-restore customer's latest Firestore saved address if local DataStore is empty
     LaunchedEffect(savedAddresses) {
@@ -888,19 +909,17 @@ private fun AuthenticatedCafeShell(
     val isSuperAdminAccount =
         (userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true) && isEmailVerified) ||
             effectiveRole == UserRole.SuperAdmin
+    val latestIsSuperAdmin by rememberUpdatedState(isSuperAdminAccount)
+    val latestBranchAssignment by rememberUpdatedState(branchAdminAssignment)
 
-    // Keep real-time background order listener active for SuperAdmin & BranchAdmin
+    // Keep real-time background order listener active ONLY for assigned Branch Admins.
+    // Super Admin NEVER runs background new-order monitoring or receives individual order alerts.
     LaunchedEffect(isSuperAdminAccount, branchAdminAssignment, branchAssignmentLoaded, notificationsGranted) {
         when {
-            isSuperAdminAccount && notificationsGranted -> {
-                AdminOrderMonitorService.startMonitoring(
-                    context = context,
-                    isSuperAdmin = true,
-                    branchId = "",
-                    branchName = "All Branches"
-                )
+            isSuperAdminAccount -> {
+                AdminOrderMonitorService.stopMonitoring(context)
             }
-            !isSuperAdminAccount && branchAdminAssignment != null && notificationsGranted -> {
+            branchAdminAssignment != null && notificationsGranted -> {
                 AdminOrderMonitorService.startMonitoring(
                     context = context,
                     isSuperAdmin = false,
@@ -908,7 +927,7 @@ private fun AuthenticatedCafeShell(
                     branchName = branchAdminAssignment!!.branchName
                 )
             }
-            !isSuperAdminAccount && branchAssignmentLoaded && branchAdminAssignment == null -> {
+            branchAssignmentLoaded && branchAdminAssignment == null -> {
                 AdminOrderMonitorService.stopMonitoring(context)
             }
         }
@@ -917,22 +936,14 @@ private fun AuthenticatedCafeShell(
     val requestOrStartAdminAlerts: () -> Unit = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationsGranted) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (isSuperAdminAccount) {
-            AdminOrderMonitorService.startMonitoring(
-                context = context,
-                isSuperAdmin = true,
-                branchId = "",
-                branchName = "All Branches"
-            )
-            scope.launch { snackbarHostState.showSnackbar("Instant background order alerts enabled for All Branches!") }
-        } else if (branchAdminAssignment != null) {
+        } else if (!isSuperAdminAccount && branchAdminAssignment != null) {
             AdminOrderMonitorService.startMonitoring(
                 context = context,
                 isSuperAdmin = false,
                 branchId = branchAdminAssignment!!.branchId,
                 branchName = branchAdminAssignment!!.branchName
             )
-            scope.launch { snackbarHostState.showSnackbar("Instant background order alerts enabled!") }
+            scope.launch { snackbarHostState.showSnackbar("Instant background order alerts enabled for ${branchAdminAssignment!!.branchName}!") }
         }
     }
 
@@ -943,10 +954,9 @@ private fun AuthenticatedCafeShell(
         val targetOrderId = pendingNotificationOrderId
         if (!targetOrderId.isNullOrBlank()) {
             if (pendingNotificationEventType == OrderNotificationHelper.EVENT_NEW_ORDER) {
-                if (isSuperAdminAccount) {
-                    showSuperAdminDashboard = true
+                if (!isSuperAdminAccount && branchAdminAssignment != null) {
+                    snackbarHostState.showSnackbar("New order #${targetOrderId.takeLast(6).uppercase()} is waiting in your branch queue!")
                 }
-                snackbarHostState.showSnackbar("New order #${targetOrderId.takeLast(6).uppercase()} is in your queue!")
             } else if (pendingNotificationEventType == OrderNotificationHelper.EVENT_ORDER_DELIVERED) {
                 if (isSuperAdminAccount) {
                     showSuperAdminDashboard = true
@@ -962,10 +972,12 @@ private fun AuthenticatedCafeShell(
     LaunchedEffect(Unit) {
         FcmOrderEventBus.events.collect { pushEvent ->
             if (pushEvent.eventType == OrderNotificationHelper.EVENT_NEW_ORDER) {
-                snackbarHostState.showSnackbar(
-                    message = "${pushEvent.title}: ${pushEvent.body}",
-                    withDismissAction = true
-                )
+                if (!latestIsSuperAdmin && latestBranchAssignment != null) {
+                    snackbarHostState.showSnackbar(
+                        message = "${pushEvent.title}: ${pushEvent.body}",
+                        withDismissAction = true
+                    )
+                }
             } else {
                 val result = snackbarHostState.showSnackbar(
                     message = "${pushEvent.title}: ${pushEvent.body}",
@@ -979,8 +991,16 @@ private fun AuthenticatedCafeShell(
         }
     }
 
-    LaunchedEffect(newBranchOrderAlert) {
-        val incoming = newBranchOrderAlert ?: return@LaunchedEffect
+    val activeNewOrderPopupId = newBranchOrderPopupQueue.firstOrNull()?.id
+    LaunchedEffect(activeNewOrderPopupId, isSuperAdminAccount, branchAdminAssignment, adminSoundEnabled) {
+        if (isSuperAdminAccount || branchAdminAssignment == null) return@LaunchedEffect
+        val incoming = newBranchOrderPopupQueue.firstOrNull() ?: return@LaunchedEffect
+        if (adminSoundEnabled) {
+            OrderNotificationHelper.playNewOrderAlertSound(context)
+        }
+        val orderTimeText = incoming.createdAt?.toDate()?.let { date ->
+            SimpleDateFormat("hh:mm a", Locale.US).format(date)
+        } ?: "Just now"
         OrderNotificationHelper.notifyNewBranchOrder(
             context = context,
             orderId = incoming.id,
@@ -993,7 +1013,9 @@ private fun AuthenticatedCafeShell(
             customerPhone = incoming.customerPhone,
             deliveryAddress = incoming.deliveryAddress,
             deliveryLatitude = incoming.deliveryLatitude,
-            deliveryLongitude = incoming.deliveryLongitude
+            deliveryLongitude = incoming.deliveryLongitude,
+            paymentMethod = incoming.paymentMethod,
+            orderTime = orderTimeText
         )
     }
 
@@ -1008,7 +1030,8 @@ private fun AuthenticatedCafeShell(
             status = newStatus,
             branchName = order?.branchName ?: "Lahori Food Cafe",
             itemsSummary = order?.itemsSummary ?: "Your order",
-            orderType = order?.orderType ?: OrderType.DELIVERY.name
+            orderType = order?.orderType ?: OrderType.DELIVERY.name,
+            rejectionReason = order?.rejectionReason.orEmpty()
         )
         delay(4500L)
         viewModel.dismissStatusBanner()
@@ -1028,7 +1051,14 @@ private fun AuthenticatedCafeShell(
     var showBucketSheet by remember { mutableStateOf(false) }
     var isSubmittingOrder by remember { mutableStateOf(false) }
 
-    val menuItems = (menuState as? UiState.Success)?.data ?: SeedMenuData.initialItems
+    val globalMenuItems = (menuState as? UiState.Success)?.data ?: SeedMenuData.initialItems
+    val effectiveMenuItems = (effectiveMenuState as? UiState.Success)?.data ?: globalMenuItems
+
+    // Keep customer cart prices & availability synced whenever selected branch or branch price overrides change
+    LaunchedEffect(effectiveMenuItems, sessionState.selectedBranchId) {
+        sessionCart.syncCartWithEffectiveMenu(effectiveMenuItems)
+    }
+
     val favoriteIds = remember(userProfile) { userProfile?.favoriteItemIds?.toSet() ?: emptySet() }
     val cartQuantities = remember(sessionState.cartItems) {
         sessionState.cartItems.associate { it.menuItem.id to it.quantity }
@@ -1038,7 +1068,7 @@ private fun AuthenticatedCafeShell(
     val feedbackList = (customerFeedbackState as? UiState.Success)?.data ?: emptyList()
     val reviewsByOrderId = remember(reviewsList) { reviewsList.associateBy { it.orderId } }
     val activeOrdersList = remember(ordersList) {
-        ordersList.filter { OrderStatus.fromString(it.status) != OrderStatus.Delivered }
+        ordersList.filter { OrderStatus.fromString(it.status).isActive }
     }
     val activeOrderCount = activeOrdersList.size
 
@@ -1065,7 +1095,7 @@ private fun AuthenticatedCafeShell(
     if (showSuperAdminDashboard && userEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
         SuperAdminDashboardScreen(
             allOrdersState = superAdminOrdersState,
-            menuItems = menuItems,
+            menuItems = globalMenuItems,
             branchAdmins = allBranchAdmins,
             promotions = promotionsList,
             reviews = allReviews,
@@ -1076,7 +1106,16 @@ private fun AuthenticatedCafeShell(
             isSavingMenuItem = isSavingMenuItem,
             branches = branchesList,
             isSavingBranch = isSavingBranch,
-            onSaveBranch = { branchId, name, shortLabel, shortAddress, areas, active, sortOrder, lat, lng, mapUrl, openHours, done ->
+            deliverySettings = deliverySettings,
+            isSavingDeliverySettings = isSavingDeliverySettings,
+            onSaveDeliverySettings = { minOrderPkr, defaultFeePkr, done ->
+                viewModel.saveDeliverySettings(
+                    freeDeliveryMinOrderPkr = minOrderPkr,
+                    defaultDeliveryFeePkr = defaultFeePkr,
+                    onDone = done
+                )
+            },
+            onSaveBranch = { branchId, name, shortLabel, shortAddress, areas, active, sortOrder, lat, lng, mapUrl, openHours, deliveryFeePkr, done ->
                 viewModel.saveBranch(
                     branchId = branchId,
                     name = name,
@@ -1089,6 +1128,7 @@ private fun AuthenticatedCafeShell(
                     longitude = lng,
                     mapUrl = mapUrl,
                     openHours = openHours,
+                    deliveryFeePkr = deliveryFeePkr,
                     onDone = done
                 )
             },
@@ -1136,11 +1176,11 @@ private fun AuthenticatedCafeShell(
             },
             onDeletePromotion = { viewModel.deletePromotion(it) },
             onBack = { showSuperAdminDashboard = false },
-            newOrderAlert = newBranchOrderAlert,
-            onDismissNewOrderAlert = { viewModel.dismissNewBranchOrderAlert() },
+            newOrderAlert = null,
+            onDismissNewOrderAlert = {},
             notificationsEnabled = notificationsGranted,
-            liveAlertsActive = liveAdminAlertsRunning,
-            onRequestEnableAlerts = requestOrStartAdminAlerts,
+            liveAlertsActive = false,
+            onRequestEnableAlerts = {},
             adminNotifications = adminNotifications,
             unreadNotificationCount = unreadAdminNotificationCount,
             deliveredPopupQueue = deliveredPopupQueue,
@@ -1185,9 +1225,20 @@ private fun AuthenticatedCafeShell(
                 branchName = assignedBranchEntry.branchName,
                 ordersState = branchOrdersState,
                 onUpdateOrderStatus = { orderId, status -> viewModel.updateOrderStatus(orderId, status) },
+                onAcceptOrder = { orderId ->
+                    viewModel.acceptBranchOrder(orderId) {
+                        scope.launch { snackbarHostState.showSnackbar("Order #${orderId.takeLast(6).uppercase()} confirmed! Customer notified.") }
+                    }
+                },
+                onRejectOrder = { orderId, reason ->
+                    viewModel.rejectBranchOrder(orderId, reason) {
+                        scope.launch { snackbarHostState.showSnackbar("Order #${orderId.takeLast(6).uppercase()} rejected.") }
+                    }
+                },
                 managerEmail = userEmail,
                 onSignOut = {
                     AdminOrderMonitorService.stopMonitoring(context)
+                    AddressAndAlertPreferences.clearActiveRoleSession(context)
                     scope.launch {
                         withContext(NonCancellable) {
                             viewModel.unregisterDeviceFcmToken()
@@ -1196,8 +1247,42 @@ private fun AuthenticatedCafeShell(
                     }
                 },
                 branches = branchesList,
+                globalMenuItems = globalMenuItems,
+                branchOverrides = branchAdminMenuOverrides,
+                deliverySettings = deliverySettings,
+                isSavingBranchMenuOverride = isSavingBranchMenuOverride,
+                isSavingDeliverySettings = isSavingDeliverySettings,
+                onSaveBranchMenuOverride = { itemId, pricePkr, available, onDone ->
+                    viewModel.saveBranchMenuOverride(
+                        branchId = assignedBranchEntry.branchId,
+                        itemId = itemId,
+                        pricePkr = pricePkr,
+                        available = available
+                    ) {
+                        onDone()
+                        scope.launch { snackbarHostState.showSnackbar("Updated branch menu price/availability") }
+                    }
+                },
+                onResetBranchMenuOverride = { itemId, onDone ->
+                    viewModel.resetBranchMenuOverride(
+                        branchId = assignedBranchEntry.branchId,
+                        itemId = itemId
+                    ) {
+                        onDone()
+                        scope.launch { snackbarHostState.showSnackbar("Reset item to global catalog price") }
+                    }
+                },
+                onUpdateBranchDeliveryFee = { feePkr, onDone ->
+                    viewModel.updateBranchDeliveryFee(
+                        branchId = assignedBranchEntry.branchId,
+                        deliveryFeePkr = feePkr,
+                        onDone = onDone
+                    )
+                },
                 newOrderAlert = newBranchOrderAlert,
                 onDismissNewOrderAlert = { viewModel.dismissNewBranchOrderAlert() },
+                newOrderPopupQueue = newBranchOrderPopupQueue,
+                onDismissNewOrderPopup = { viewModel.dismissCurrentNewOrderPopup() },
                 branchPromotions = branchAdminPromotions,
                 branchBanners = branchAdminBanners,
                 isSavingBranchPromo = isSavingBranchPromo,
@@ -1284,11 +1369,29 @@ private fun AuthenticatedCafeShell(
             branchName = assignedBranchEntry.branchName,
             ordersState = branchOrdersState,
             onUpdateOrderStatus = { orderId, status -> viewModel.updateOrderStatus(orderId, status) },
+            onAcceptOrder = { orderId -> viewModel.acceptBranchOrder(orderId) },
+            onRejectOrder = { orderId, reason -> viewModel.rejectBranchOrder(orderId, reason) },
             onBack = { showBranchAdminDashboard = false },
             managerEmail = userEmail,
             branches = branchesList,
+            globalMenuItems = globalMenuItems,
+            branchOverrides = branchAdminMenuOverrides,
+            deliverySettings = deliverySettings,
+            isSavingBranchMenuOverride = isSavingBranchMenuOverride,
+            isSavingDeliverySettings = isSavingDeliverySettings,
+            onSaveBranchMenuOverride = { itemId, pricePkr, available, onDone ->
+                viewModel.saveBranchMenuOverride(assignedBranchEntry.branchId, itemId, pricePkr, available, onDone)
+            },
+            onResetBranchMenuOverride = { itemId, onDone ->
+                viewModel.resetBranchMenuOverride(assignedBranchEntry.branchId, itemId, onDone)
+            },
+            onUpdateBranchDeliveryFee = { feePkr, onDone ->
+                viewModel.updateBranchDeliveryFee(assignedBranchEntry.branchId, feePkr, onDone)
+            },
             newOrderAlert = newBranchOrderAlert,
             onDismissNewOrderAlert = { viewModel.dismissNewBranchOrderAlert() },
+            newOrderPopupQueue = newBranchOrderPopupQueue,
+            onDismissNewOrderPopup = { viewModel.dismissCurrentNewOrderPopup() },
             branchPromotions = branchAdminPromotions,
             branchBanners = branchAdminBanners,
             isSavingBranchPromo = isSavingBranchPromo,
@@ -1426,7 +1529,7 @@ private fun AuthenticatedCafeShell(
         ) {
             when (currentTab) {
                 CafeTab.Explore -> ExploreScreen(
-                    menuItems = menuItems,
+                    menuItems = effectiveMenuItems,
                     favoriteIds = favoriteIds,
                     cartQuantities = cartQuantities,
                     searchQuery = searchQuery,
@@ -1463,7 +1566,7 @@ private fun AuthenticatedCafeShell(
                     onTrackActiveOrder = { order -> viewModel.startTrackingOrder(order.id) }
                 )
                 CafeTab.Menu -> MenuScreen(
-                    menuItems = menuItems,
+                    menuItems = effectiveMenuItems,
                     favoriteIds = favoriteIds,
                     cartQuantities = cartQuantities,
                     searchQuery = searchQuery,
@@ -1502,6 +1605,7 @@ private fun AuthenticatedCafeShell(
                     onSignInClick = {},
                     onSignOutClick = {
                         AdminOrderMonitorService.stopMonitoring(context)
+                        AddressAndAlertPreferences.clearActiveRoleSession(context)
                         scope.launch {
                             withContext(NonCancellable) {
                                 viewModel.unregisterDeviceFcmToken()
@@ -1682,7 +1786,7 @@ private fun AuthenticatedCafeShell(
                                 landmark = saved.landmark,
                                 branchId = saved.branchId
                             )
-                            snackbarHostState.showSnackbar("Address saved! Serving branch: ${saved.branchName} • FREE Delivery")
+                            snackbarHostState.showSnackbar("Address saved! Serving branch: ${saved.branchName}")
                         }
                     }
                 }
@@ -1696,6 +1800,7 @@ private fun AuthenticatedCafeShell(
             branches = branchesList,
             orderType = sessionState.orderType,
             selectedBranchId = sessionState.selectedBranchId,
+            freeDeliveryMinOrderPkr = deliverySettings.freeDeliveryMinOrderPkr,
             deviceLatitude = sessionState.deviceLatitude,
             deviceLongitude = sessionState.deviceLongitude,
             detectedGpsAddress = sessionState.detectedGpsAddress,
@@ -1727,7 +1832,8 @@ private fun AuthenticatedCafeShell(
             sessionState = sessionState,
             isSignedIn = true,
             defaultCustomerName = userDisplayName,
-            isSubmitting = isSubmittingOrder,
+            isSubmitting = isSubmittingOrder || isPlacingOrder,
+            deliverySettings = deliverySettings,
             onAddItem = { sessionCart.addToCart(it) },
             onRemoveItem = { sessionCart.decrementCartItem(it) },
             onApplyPromoCode = { code, onResult -> viewModel.validateAndApplyPromoCode(code, onResult) },
@@ -1784,7 +1890,7 @@ private fun AuthenticatedCafeShell(
                     }
                 }
             },
-            onPlaceOrder = { name, phone, deliveryAddr, deliveryLat, deliveryLng, guestCheckout ->
+            onPlaceOrder = { name, phone, deliveryAddr, deliveryLat, deliveryLng, guestCheckout, paymentMethod ->
                 isSubmittingOrder = true
                 viewModel.submitOrder(
                     customerName = name,
@@ -1793,6 +1899,7 @@ private fun AuthenticatedCafeShell(
                     deliveryLatitude = deliveryLat,
                     deliveryLongitude = deliveryLng,
                     guestCheckout = guestCheckout,
+                    paymentMethod = paymentMethod,
                     onError = {
                         isSubmittingOrder = false
                     },
@@ -1802,12 +1909,15 @@ private fun AuthenticatedCafeShell(
                         currentTab = CafeTab.Orders
                         viewModel.startTrackingOrder(orderId)
                         val branch = BranchDirectory.byId(sessionState.selectedBranchId, branchesList)
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Order Placed Successfully! Waiting for restaurant confirmation.")
+                        }
                         OrderNotificationHelper.notifyOrderStatus(
                             context = context,
                             orderId = orderId,
-                            status = OrderStatus.Confirmed,
+                            status = OrderStatus.Pending,
                             branchName = branch.name,
-                            itemsSummary = "Order confirmed!",
+                            itemsSummary = "Waiting for restaurant confirmation.",
                             orderType = sessionState.orderType.name
                         )
                     }

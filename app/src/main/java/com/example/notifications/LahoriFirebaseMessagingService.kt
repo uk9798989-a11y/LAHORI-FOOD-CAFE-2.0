@@ -1,9 +1,13 @@
 package com.example.notifications
 
 import android.util.Log
+import com.example.data.AddressAndAlertPreferences
 import com.example.data.CafeRepository
+import com.example.model.DEFAULT_PAYMENT_METHOD
+import com.example.model.NotificationRoutingPolicy
 import com.example.model.OrderStatus
 import com.example.model.OrderType
+import com.example.model.SUPER_ADMIN_EMAIL
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -65,15 +69,36 @@ class LahoriFirebaseMessagingService : FirebaseMessagingService() {
         val customerName = data["customerName"].orEmpty()
         val customerPhone = data["customerPhone"].orEmpty()
         val deliveryAddress = data["deliveryAddress"].orEmpty()
+        val paymentMethod = data["paymentMethod"].orEmpty().ifBlank { DEFAULT_PAYMENT_METHOD }
+        val orderTime = data["orderTime"].orEmpty()
+        val rejectionReason = data["rejectionReason"].orEmpty()
         val deliveryLatitude = data["deliveryLatitude"]?.toDoubleOrNull() ?: 0.0
         val deliveryLongitude = data["deliveryLongitude"]?.toDoubleOrNull() ?: 0.0
         val totalPkr = data["totalPkr"]?.toLongOrNull() ?: 0L
         val itemsSummary = data["itemsSummary"].orEmpty()
 
+        // Hard client-side guard for NEW_ORDER push notifications:
+        // Super Admin and unrelated Branch Admins / Customers NEVER display new-order alerts.
+        if (isNewOrder) {
+            val (activeRole, activeBranchId, activeEmail) =
+                AddressAndAlertPreferences.readActiveRoleSession(applicationContext)
+            val signedInEmail = Firebase.auth.currentUser?.email.orEmpty().trim().lowercase()
+            if (activeEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true) ||
+                signedInEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)
+            ) {
+                Log.d(TAG, "Suppressed NEW_ORDER FCM push for Super Admin account")
+                return
+            }
+            if (!NotificationRoutingPolicy.shouldReceiveNewOrderAlert(activeRole, activeBranchId, branchId)) {
+                Log.d(TAG, "Suppressed NEW_ORDER FCM push: role=$activeRole, activeBranch=$activeBranchId, orderBranch=$branchId")
+                return
+            }
+        }
+
         val resolvedStatus = if (isNewOrder) {
-            OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Confirmed.name })
+            OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Pending.name })
         } else {
-            OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Dispatched.name })
+            OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Confirmed.name })
         }
         val shortId = orderId.takeLast(6).uppercase()
         val title = remoteMessage.notification?.title
@@ -86,9 +111,9 @@ class LahoriFirebaseMessagingService : FirebaseMessagingService() {
         val body = remoteMessage.notification?.body
             ?: data["body"]
             ?: if (isNewOrder) {
-                "${customerName.ifBlank { "Customer" }} • ${itemsSummary.ifBlank { "New branch order" }}"
+                "${customerName.ifBlank { "Customer" }} • Rs. $totalPkr • ${itemsSummary.ifBlank { "New branch order" }}"
             } else {
-                resolvedStatus.notificationMessageFor(orderType)
+                resolvedStatus.notificationMessageFor(orderType, rejectionReason)
             }
 
         OrderNotificationHelper.notifyRemoteMessage(
@@ -107,7 +132,10 @@ class LahoriFirebaseMessagingService : FirebaseMessagingService() {
             customerPhone = customerPhone,
             deliveryAddress = deliveryAddress,
             deliveryLatitude = deliveryLatitude,
-            deliveryLongitude = deliveryLongitude
+            deliveryLongitude = deliveryLongitude,
+            paymentMethod = paymentMethod,
+            orderTime = orderTime,
+            rejectionReason = rejectionReason
         )
 
         if (orderId.isNotBlank()) {

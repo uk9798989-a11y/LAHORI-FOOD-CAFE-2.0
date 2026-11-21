@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.model.CafeOrder
 import com.example.model.OrderStatus
+import com.example.model.SUPER_ADMIN_EMAIL
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -23,12 +24,19 @@ import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Play-Policy-compliant Android 14+ foreground service (foregroundServiceType="dataSync")
- * that keeps a real-time Firestore listener active for authenticated SuperAdmin & BranchAdmin
- * accounts so incoming customer orders fire immediate heads-up notifications outside the app
- * (status bar, lock screen, sound & vibration) even when the app is minimized or backgrounded.
+ * that keeps a real-time Firestore listener active EXCLUSIVELY for authenticated Branch Admins
+ * scoped to their assigned branchId.
+ *
+ * Strict Role Separation:
+ * - Super Admin NEVER runs this service and NEVER receives new-order notifications or sounds.
+ * - Branch Admin receives immediate, deduplicated heads-up notifications ONLY for Pending orders
+ *   belonging to their own assigned branchId.
  */
 class AdminOrderMonitorService : Service() {
 
@@ -68,12 +76,21 @@ class AdminOrderMonitorService : Service() {
             return START_NOT_STICKY
         }
 
+        // Hard guard: Super Admin must NEVER receive new-order background alerts
+        val currentEmail = currentUser.email.orEmpty().trim()
+        if (currentEmail.equals(SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+            Log.d(TAG, "Super Admin account detected — disabling background new-order monitor")
+            clearSavedConfig(applicationContext)
+            stopListeningAndTerminate()
+            return START_NOT_STICKY
+        }
+
         val prefs = getSharedPreferences(PREFS_MONITOR, Context.MODE_PRIVATE)
         val isSuperAdmin: Boolean
         val branchId: String
         val branchName: String
 
-        if (intent != null && intent.hasExtra(EXTRA_IS_SUPER_ADMIN)) {
+        if (intent != null && intent.hasExtra(EXTRA_BRANCH_ID)) {
             isSuperAdmin = intent.getBooleanExtra(EXTRA_IS_SUPER_ADMIN, false)
             branchId = intent.getStringExtra(EXTRA_BRANCH_ID).orEmpty().trim()
             branchName = intent.getStringExtra(EXTRA_BRANCH_NAME).orEmpty().trim()
@@ -88,13 +105,14 @@ class AdminOrderMonitorService : Service() {
             branchName = prefs.getString(KEY_BRANCH_NAME, "").orEmpty().trim()
         }
 
-        if (!isSuperAdmin && branchId.isBlank()) {
+        if (isSuperAdmin || branchId.isBlank()) {
+            clearSavedConfig(applicationContext)
             stopListeningAndTerminate()
             return START_NOT_STICKY
         }
 
-        val roleLabel = if (isSuperAdmin) "Super Admin" else "Branch Admin"
-        val branchLabel = if (isSuperAdmin) "All Branches" else branchName.ifBlank { branchId }
+        val roleLabel = "Branch Admin"
+        val branchLabel = branchName.ifBlank { branchId }
 
         val stopIntent = Intent(this, AdminOrderMonitorService::class.java).apply {
             action = ACTION_STOP_MONITOR
@@ -133,16 +151,16 @@ class AdminOrderMonitorService : Service() {
             return START_NOT_STICKY
         }
 
-        val newScopeKey = if (isSuperAdmin) "super_all" else "branch_$branchId"
+        val newScopeKey = "branch_$branchId"
         if (activeScopeKey != newScopeKey || ordersListener == null) {
-            attachFirestoreOrderListener(isSuperAdmin, branchId)
+            attachFirestoreOrderListener(branchId)
             activeScopeKey = newScopeKey
         }
 
         return START_STICKY
     }
 
-    private fun attachFirestoreOrderListener(isSuperAdmin: Boolean, branchId: String) {
+    private fun attachFirestoreOrderListener(branchId: String) {
         ordersListener?.remove()
         ordersListener = null
         seenOrderIds.clear()
@@ -151,15 +169,11 @@ class AdminOrderMonitorService : Service() {
 
         val databaseId = applicationContext.getString(R.string.firestore_database_id)
         val db = FirebaseFirestore.getInstance(databaseId)
-        val query = if (isSuperAdmin) {
-            db.collection("orders")
-        } else {
-            db.collection("orders").whereEqualTo("branchId", branchId)
-        }
+        val query = db.collection("orders").whereEqualTo("branchId", branchId)
 
         ordersListener = query.addSnapshotListener { snapshots, error ->
             if (error != null) {
-                Log.w(TAG, "Live admin order listener error: ${error.message}")
+                Log.w(TAG, "Live branch admin order listener error: ${error.message}")
                 return@addSnapshotListener
             }
             if (snapshots == null) return@addSnapshotListener
@@ -174,6 +188,7 @@ class AdminOrderMonitorService : Service() {
                 return@addSnapshotListener
             }
 
+            val timeFormatter = SimpleDateFormat("hh:mm a", Locale.getDefault())
             for (change in snapshots.documentChanges) {
                 val doc = change.document
                 val order = doc.toObject(
@@ -181,11 +196,15 @@ class AdminOrderMonitorService : Service() {
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                 )
                 val orderId = order.id.ifBlank { doc.id }
+                // Double-check strict branch isolation
+                if (order.branchId != branchId) continue
                 val newStatus = OrderStatus.fromString(order.status)
 
                 if (change.type == DocumentChange.Type.ADDED) {
                     seenOrderStatuses[doc.id] = newStatus
-                    if (seenOrderIds.add(doc.id) && newStatus == OrderStatus.Confirmed) {
+                    if (seenOrderIds.add(doc.id) && newStatus == OrderStatus.Pending) {
+                        val orderTime = order.createdAt?.toDate()?.let { timeFormatter.format(it) }
+                            ?: timeFormatter.format(Date())
                         OrderNotificationHelper.notifyNewBranchOrder(
                             context = applicationContext,
                             orderId = orderId,
@@ -198,12 +217,14 @@ class AdminOrderMonitorService : Service() {
                             customerPhone = order.customerPhone,
                             deliveryAddress = order.deliveryAddress,
                             deliveryLatitude = order.deliveryLatitude,
-                            deliveryLongitude = order.deliveryLongitude
+                            deliveryLongitude = order.deliveryLongitude,
+                            paymentMethod = order.paymentMethod,
+                            orderTime = orderTime
                         )
                         FcmOrderEventBus.emit(
                             FcmOrderPushEvent(
                                 orderId = orderId,
-                                status = OrderStatus.Confirmed,
+                                status = OrderStatus.Pending,
                                 title = "New ${order.orderType} Order #${orderId.takeLast(6).uppercase()}",
                                 body = "${order.customerName} • Rs. ${order.totalPkr} • ${order.itemsSummary}",
                                 eventType = OrderNotificationHelper.EVENT_NEW_ORDER,
@@ -225,7 +246,8 @@ class AdminOrderMonitorService : Service() {
                             customerName = order.customerName,
                             customerPhone = order.customerPhone,
                             deliveryAddress = order.deliveryAddress,
-                            totalPkr = order.totalPkr
+                            totalPkr = order.totalPkr,
+                            deliveryFeePkr = order.deliveryFeePkr
                         )
                     }
                 }
@@ -274,10 +296,14 @@ class AdminOrderMonitorService : Service() {
             branchId: String = "",
             branchName: String = ""
         ) {
-            if (!isSuperAdmin && branchId.isBlank()) return
+            // Super Admin must NEVER run background new-order monitoring
+            if (isSuperAdmin || branchId.isBlank()) {
+                stopMonitoring(context)
+                return
+            }
             if (!OrderNotificationHelper.hasNotificationPermission(context)) return
             val intent = Intent(context.applicationContext, AdminOrderMonitorService::class.java).apply {
-                putExtra(EXTRA_IS_SUPER_ADMIN, isSuperAdmin)
+                putExtra(EXTRA_IS_SUPER_ADMIN, false)
                 putExtra(EXTRA_BRANCH_ID, branchId)
                 putExtra(EXTRA_BRANCH_NAME, branchName)
             }

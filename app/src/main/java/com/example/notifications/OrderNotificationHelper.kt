@@ -169,10 +169,11 @@ object OrderNotificationHelper {
         status: OrderStatus,
         branchName: String,
         itemsSummary: String,
-        orderType: String = OrderType.DELIVERY.name
+        orderType: String = OrderType.DELIVERY.name,
+        rejectionReason: String = ""
     ) {
         val statusTitle = status.notificationTitleFor(orderType)
-        val statusMsg = status.notificationMessageFor(orderType)
+        val statusMsg = status.notificationMessageFor(orderType, rejectionReason)
         val shortId = orderId.takeLast(6).uppercase()
         val fullTitle = "Lahori Food Cafe — $statusTitle"
         val expandedBody = "$statusMsg ($branchName • #$shortId: $itemsSummary)"
@@ -180,7 +181,7 @@ object OrderNotificationHelper {
         postNotification(
             context = context,
             channelId = CHANNEL_ID,
-            notificationId = if (orderId.isNotBlank()) "order_status_$orderId".hashCode() else 1001,
+            notificationId = if (orderId.isNotBlank()) "order_status_${orderId}_${status.name}".hashCode() else 1001,
             orderId = orderId,
             eventType = EVENT_ORDER_STATUS,
             branchId = "",
@@ -203,6 +204,8 @@ object OrderNotificationHelper {
         deliveryAddress: String = "",
         deliveryLatitude: Double = 0.0,
         deliveryLongitude: Double = 0.0,
+        paymentMethod: String = "Cash on Delivery",
+        orderTime: String = "",
         customTitle: String? = null,
         customBody: String? = null,
         skipDedupe: Boolean = false
@@ -224,23 +227,22 @@ object OrderNotificationHelper {
             ?: "${customerName.ifBlank { "Customer" }} • Rs. $totalPkr • ${itemsSummary.ifBlank { "New branch order" }}"
 
         val locationLine = buildString {
+            append("\nItems: ${itemsSummary.ifBlank { "Order items" }}")
+            append("\nTotal: Rs. $totalPkr • Payment: ${paymentMethod.ifBlank { "Cash on Delivery" }}")
+            if (customerPhone.isNotBlank()) {
+                append("\nPhone: $customerPhone")
+            }
             if (isDelivery && deliveryAddress.isNotBlank()) {
-                append("\nAddress: ")
-                append(deliveryAddress)
+                append("\nAddress: $deliveryAddress")
+            }
+            if (orderTime.isNotBlank()) {
+                append("\nTime: $orderTime")
             }
             if (hasGps) {
                 append("\nGPS Location Attached (Tap Open Map)")
             }
-            if (customerPhone.isNotBlank()) {
-                append("\nPhone: ")
-                append(customerPhone)
-            }
         }
-        val expandedBody = if (customBody.isNullOrBlank()) {
-            "$shortBody ($branchName)$locationLine"
-        } else {
-            "$customBody ($branchName • #$shortId)$locationLine"
-        }
+        val expandedBody = "${customerName.ifBlank { "Customer" }} ($branchName • #$shortId)$locationLine"
 
         val mapActionPendingIntent = if (hasGps) {
             val mapUri = Uri.parse(
@@ -284,6 +286,10 @@ object OrderNotificationHelper {
         }
     }
 
+    fun playNewOrderAlertSound(context: Context) {
+        playAdminDeliverySound(context)
+    }
+
     fun notifyAdminOrderDelivered(
         context: Context,
         orderId: String,
@@ -293,6 +299,7 @@ object OrderNotificationHelper {
         customerPhone: String,
         deliveryAddress: String,
         totalPkr: Long,
+        deliveryFeePkr: Long = 0L,
         skipDedupe: Boolean = false
     ) {
         val dedupeKey = "delivered_${orderId.trim()}"
@@ -300,14 +307,15 @@ object OrderNotificationHelper {
             return
         }
         val shortId = orderId.takeLast(6).uppercase()
-        val resolvedTitle = "🎉 Order #$shortId Successfully Delivered!"
-        val shortBody = "${customerName.ifBlank { "Customer" }} • Rs. $totalPkr • Free Delivery (Rs. 0)"
+        val feeLabel = if (deliveryFeePkr <= 0L) "Free Delivery (Rs. 0)" else "Delivery: Rs. $deliveryFeePkr"
+        val resolvedTitle = "Order #$shortId Successfully Delivered!"
+        val shortBody = "${customerName.ifBlank { "Customer" }} • Rs. $totalPkr • $feeLabel"
         val expandedBody = buildString {
             append("The order has been successfully delivered to the customer.")
             append("\nOrder: #$shortId ($branchName)")
             append("\nCustomer: ${customerName.ifBlank { "Customer" }}")
             if (customerPhone.isNotBlank()) append(" • $customerPhone")
-            append("\nTotal: Rs. $totalPkr (Delivery: FREE)")
+            append("\nTotal: Rs. $totalPkr ($feeLabel)")
             if (deliveryAddress.isNotBlank()) append("\nAddress: $deliveryAddress")
         }
 
@@ -341,7 +349,10 @@ object OrderNotificationHelper {
         customerPhone: String = "",
         deliveryAddress: String = "",
         deliveryLatitude: Double = 0.0,
-        deliveryLongitude: Double = 0.0
+        deliveryLongitude: Double = 0.0,
+        paymentMethod: String = "Cash on Delivery",
+        orderTime: String = "",
+        rejectionReason: String = ""
     ) {
         if (eventType.equals(EVENT_NEW_ORDER, ignoreCase = true)) {
             notifyNewBranchOrder(
@@ -357,17 +368,19 @@ object OrderNotificationHelper {
                 deliveryAddress = deliveryAddress,
                 deliveryLatitude = deliveryLatitude,
                 deliveryLongitude = deliveryLongitude,
+                paymentMethod = paymentMethod,
+                orderTime = orderTime,
                 customTitle = title,
                 customBody = body
             )
             return
         }
 
-        val status = OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Dispatched.name })
+        val status = OrderStatus.fromString(statusRaw.ifBlank { OrderStatus.Confirmed.name })
         val resolvedTitle = title?.takeIf { it.isNotBlank() }
             ?: "Lahori Food Cafe — ${status.notificationTitleFor(orderType)}"
         val resolvedBody = body?.takeIf { it.isNotBlank() }
-            ?: status.notificationMessageFor(orderType)
+            ?: status.notificationMessageFor(orderType, rejectionReason)
         val shortId = orderId.takeLast(6).uppercase()
         val detailsSuffix = buildList {
             if (branchName.isNotBlank()) add(branchName)
@@ -379,7 +392,7 @@ object OrderNotificationHelper {
         postNotification(
             context = context,
             channelId = CHANNEL_ID,
-            notificationId = if (orderId.isNotBlank()) "order_status_$orderId".hashCode() else 1001,
+            notificationId = if (orderId.isNotBlank()) "order_status_${orderId}_${status.name}".hashCode() else 1001,
             orderId = orderId,
             eventType = EVENT_ORDER_STATUS,
             branchId = branchId,

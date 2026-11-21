@@ -182,21 +182,26 @@ test("Order isolation, guest checkout payload, and BranchAdmin scoping", async (
     customerPhone: "03001234567",
     orderType: "DELIVERY",
     deliveryAddress: "Main KLP Road, Taranda Muhammad Panah",
+    paymentMethod: "Cash on Delivery",
     branchId: "branch_1",
     branchName: "Lahori Food Cafe — Taranda Muhammad Panah",
-    branchAdminEmails: [BRANCH_1_EMAIL],
+    branchAdminEmails: [],
     items: [{ itemId: "zinger_1", name: "Zinger Burger", quantity: 2, unitPricePkr: 650, lineTotalPkr: 1300 }],
     itemsSummary: "2x Zinger Burger",
     promoCode: "LAHORI20",
     discountPkr: 260,
     subtotalPkr: 1300,
-    deliveryFeePkr: 150,
-    totalPkr: 1190,
-    status: "Confirmed",
+    deliveryFeePkr: 0, // subtotal 1300 >= Rs. 800 -> FREE delivery
+    totalPkr: 1040,
+    status: "Pending",
     createdAt: now,
     updatedAt: now,
   };
 
+  // Customer cannot create an order directly in Confirmed status
+  await assertFails(custADb.collection("orders").doc("order_bad_status").set({ ...orderPayload, status: "Confirmed" }));
+
+  // Valid Pending order succeeds
   await assertSucceeds(custADb.collection("orders").doc("order_1").set(orderPayload));
   await assertSucceeds(custADb.collection("orders").where("userId", "==", CUSTOMER_A).get());
   await assertFails(custADb.collection("orders").get()); // unfiltered list denied
@@ -215,8 +220,15 @@ test("Order isolation, guest checkout payload, and BranchAdmin scoping", async (
     })
   );
 
-  // BranchAdmin can query assigned branch orders via branchId and update status
+  // BranchAdmin queries assigned branch orders, accepts Pending -> Confirmed, then progresses to Preparing
   await assertSucceeds(branchMgrDb.collection("orders").where("branchId", "==", "branch_1").get());
+  await assertSucceeds(
+    branchMgrDb.collection("orders").doc("order_1").update({
+      status: "Confirmed",
+      confirmedAt: new Date(Date.now() - 1500),
+      updatedAt: new Date(Date.now() - 1500),
+    })
+  );
   await assertSucceeds(branchMgrDb.collection("orders").doc("order_1").update({ status: "Preparing", updatedAt: new Date(Date.now() - 1000) }));
 
   // SuperAdmin can list all orders across branches
@@ -274,6 +286,19 @@ test("Reviews: Customer can review only own Delivered order; cross-user access d
   const superDb = testEnv.authenticatedContext(SUPER_ADMIN_UID, { email: SUPER_ADMIN_EMAIL, email_verified: true }).firestore();
   const now = new Date(Date.now() - 2000);
 
+  const branchMgrDb = testEnv.authenticatedContext(BRANCH_MGR_UID, { email: BRANCH_1_EMAIL, email_verified: true }).firestore();
+
+  await assertSucceeds(
+    superDb.collection("branch_admins").doc(BRANCH_1_EMAIL).set({
+      email: BRANCH_1_EMAIL,
+      role: "BranchAdmin",
+      branchId: "branch_1",
+      branchName: "Lahori Food Cafe — Taranda Muhammad Panah",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
   const orderPayload = {
     userId: CUSTOMER_A,
     guestSessionId: "",
@@ -293,7 +318,7 @@ test("Reviews: Customer can review only own Delivered order; cross-user access d
     subtotalPkr: 650,
     deliveryFeePkr: 150,
     totalPkr: 800,
-    status: "Confirmed",
+    status: "Pending",
     createdAt: now,
     updatedAt: now,
   };
@@ -316,10 +341,17 @@ test("Reviews: Customer can review only own Delivered order; cross-user access d
   // Non-existent review pre-check get() succeeds without throwing PERMISSION_DENIED
   await assertSucceeds(custADb.collection("reviews").doc("order_rev_1").get());
 
-  // Denied while order is still Confirmed
+  // Denied while order is still Pending
   await assertFails(custADb.collection("reviews").doc("order_rev_1").set(reviewPayload));
 
-  // Mark order Delivered
+  // Branch Admin confirms order, then SuperAdmin/BranchAdmin marks order Delivered
+  await assertSucceeds(
+    branchMgrDb.collection("orders").doc("order_rev_1").update({
+      status: "Confirmed",
+      confirmedAt: new Date(Date.now() - 1500),
+      updatedAt: new Date(Date.now() - 1500),
+    })
+  );
   await assertSucceeds(superDb.collection("orders").doc("order_rev_1").update({ status: "Delivered", updatedAt: new Date(Date.now() - 1000) }));
 
   // Customer A can submit and update review; Customer B cannot read or overwrite existing review
@@ -506,7 +538,7 @@ test("Multi-branch scalability: SuperAdmin manages unlimited branches & multiple
     subtotalPkr: 350,
     deliveryFeePkr: 0,
     totalPkr: 350,
-    status: "Confirmed",
+    status: "Pending",
     createdAt: now,
     updatedAt: now,
   };
@@ -517,6 +549,13 @@ test("Multi-branch scalability: SuperAdmin manages unlimited branches & multiple
   // Both branch_1 admins see branch_1 order immediately (even without branchAdminEmails backfill); CANNOT see branch_10
   await assertSucceeds(branch1MgrADb.collection("orders").where("branchId", "==", "branch_1").get());
   await assertSucceeds(branch1MgrBDb.collection("orders").where("branchId", "==", "branch_1").get());
+  await assertSucceeds(
+    branch1MgrBDb.collection("orders").doc("ord_b1").update({
+      status: "Confirmed",
+      confirmedAt: new Date(Date.now() - 800),
+      updatedAt: new Date(Date.now() - 800),
+    })
+  );
   await assertSucceeds(branch1MgrBDb.collection("orders").doc("ord_b1").update({ status: "Preparing", updatedAt: new Date(Date.now() - 500) }));
   await assertFails(branch1MgrADb.collection("orders").where("branchId", "==", "branch_10").get());
   await assertFails(branch1MgrADb.collection("orders").doc("ord_b10").get());
@@ -524,6 +563,13 @@ test("Multi-branch scalability: SuperAdmin manages unlimited branches & multiple
 
   // branch_10 manager sees ONLY branch_10 orders; CANNOT touch branch_1 or global menu/branches
   await assertSucceeds(branch10MgrDb.collection("orders").where("branchId", "==", "branch_10").get());
+  await assertSucceeds(
+    branch10MgrDb.collection("orders").doc("ord_b10").update({
+      status: "Confirmed",
+      confirmedAt: new Date(Date.now() - 600),
+      updatedAt: new Date(Date.now() - 600),
+    })
+  );
   await assertSucceeds(branch10MgrDb.collection("orders").doc("ord_b10").update({ status: "Preparing", updatedAt: new Date(Date.now() - 400) }));
   await assertFails(branch10MgrDb.collection("orders").doc("ord_b1").get());
   await assertFails(branch10MgrDb.collection("orders").doc("ord_b1").update({ status: "Delivered", updatedAt: new Date(Date.now() - 300) }));
@@ -533,7 +579,7 @@ test("Multi-branch scalability: SuperAdmin manages unlimited branches & multiple
   await assertSucceeds(superDb.collection("branch_admins").doc("branch1.shift2@gmail.com").delete());
   await assertFails(branch1MgrBDb.collection("orders").where("branchId", "==", "branch_1").get());
   await assertFails(branch1MgrBDb.collection("orders").doc("ord_b1").get());
-  await assertFails(branch1MgrBDb.collection("orders").doc("ord_b1").update({ status: "Dispatched", updatedAt: new Date(Date.now() - 200) }));
+  await assertFails(branch1MgrBDb.collection("orders").doc("ord_b1").update({ status: "OutForDelivery", updatedAt: new Date(Date.now() - 200) }));
 });
 
 test("Branch Admin Promo & Seasonal Banner isolation: scoped strictly to assigned branchId", async () => {
@@ -703,7 +749,7 @@ test("Manual saved addresses with optional landmark & FREE delivery orders (Rs. 
       subtotalPkr: 900,
       deliveryFeePkr: 0,
       totalPkr: 900,
-      status: "Confirmed",
+      status: "Pending",
       createdAt: now,
       updatedAt: now,
     })
@@ -774,6 +820,182 @@ test("Admin Delivery Notifications: persistent storage, read status update, and 
   await assertFails(branch1MgrDb.collection("admin_notifications").doc("delivered_ord_deliv_101").delete());
   await assertSucceeds(superDb.collection("admin_notifications").doc("delivered_ord_deliv_101").delete());
 });
+
+test("Free Delivery Rs. 800 Policy, Pending->Confirmed/Rejected RBAC, and Branch Menu Overrides", async () => {
+  const custDb = testEnv.authenticatedContext(CUSTOMER_A, { email: "cust@gmail.com", email_verified: true }).firestore();
+  const branch1MgrDb = testEnv.authenticatedContext("b1_mgr_uid", { email: "b1.menu@gmail.com", email_verified: true }).firestore();
+  const branch2MgrDb = testEnv.authenticatedContext("b2_mgr_uid", { email: "b2.menu@gmail.com", email_verified: true }).firestore();
+  const superDb = testEnv.authenticatedContext(SUPER_ADMIN_UID, { email: SUPER_ADMIN_EMAIL, email_verified: true }).firestore();
+  const now = new Date(Date.now() - 4000);
+
+  // Seed branches with different delivery fees (branch_1: Rs. 150, branch_2: Rs. 200)
+  const branchBase = {
+    shortAddress: "Main Road",
+    areas: ["Center"],
+    active: true,
+    sortOrder: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await assertSucceeds(
+    superDb.collection("branches").doc("branch_1").set({
+      ...branchBase, name: "Lahori Food Cafe — Branch 1", shortLabel: "Branch 1", deliveryFeePkr: 150,
+    })
+  );
+  await assertSucceeds(
+    superDb.collection("branches").doc("branch_2").set({
+      ...branchBase, name: "Lahori Food Cafe — Branch 2", shortLabel: "Branch 2", deliveryFeePkr: 200,
+    })
+  );
+
+  // Assign Branch 1 & Branch 2 Admins
+  await assertSucceeds(
+    superDb.collection("branch_admins").doc("b1.menu@gmail.com").set({
+      email: "b1.menu@gmail.com", role: "BranchAdmin", branchId: "branch_1", branchName: "Branch 1", createdAt: now, updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    superDb.collection("branch_admins").doc("b2.menu@gmail.com").set({
+      email: "b2.menu@gmail.com", role: "BranchAdmin", branchId: "branch_2", branchName: "Branch 2", createdAt: now, updatedAt: now,
+    })
+  );
+
+  // Global delivery settings (/app_settings/delivery): SuperAdmin only!
+  await assertFails(
+    branch1MgrDb.collection("app_settings").doc("delivery").set({
+      freeDeliveryMinOrderPkr: 100, defaultDeliveryFeePkr: 150, updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    superDb.collection("app_settings").doc("delivery").set({
+      freeDeliveryMinOrderPkr: 800, defaultDeliveryFeePkr: 150, updatedBy: SUPER_ADMIN_EMAIL, updatedAt: now,
+    })
+  );
+  await assertSucceeds(custDb.collection("app_settings").doc("delivery").get());
+
+  // Branch 1 Admin can update ONLY branch_1.deliveryFeePkr (NOT name, NOT branch_2)
+  await assertSucceeds(
+    branch1MgrDb.collection("branches").doc("branch_1").update({
+      deliveryFeePkr: 120, updatedAt: new Date(Date.now() - 3000),
+    })
+  );
+  await assertFails(
+    branch1MgrDb.collection("branches").doc("branch_1").update({
+      name: "Hijacked Name", updatedAt: new Date(Date.now() - 2500),
+    })
+  );
+  await assertFails(
+    branch1MgrDb.collection("branches").doc("branch_2").update({
+      deliveryFeePkr: 50, updatedAt: new Date(Date.now() - 2500),
+    })
+  );
+
+  // Branch 1 Admin creates/updates menu_overrides for branch_1 ONLY; blocked from branch_2 & global menu_items
+  const validOverride = {
+    itemId: "zinger_1",
+    branchId: "branch_1",
+    pricePkr: 520,
+    available: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await assertSucceeds(
+    branch1MgrDb.collection("branches").doc("branch_1").collection("menu_overrides").doc("zinger_1").set(validOverride)
+  );
+  await assertSucceeds(
+    branch1MgrDb.collection("branches").doc("branch_1").collection("menu_overrides").doc("zinger_1").update({
+      pricePkr: 550, available: false, updatedAt: new Date(Date.now() - 2000),
+    })
+  );
+  await assertSucceeds(custDb.collection("branches").doc("branch_1").collection("menu_overrides").get());
+  await assertFails(
+    branch1MgrDb.collection("branches").doc("branch_2").collection("menu_overrides").doc("zinger_1").set({
+      ...validOverride, branchId: "branch_2",
+    })
+  );
+  await assertFails(
+    branch1MgrDb.collection("menu_items").doc("zinger_1").set({
+      name: "Tampered", description: "", category: "BURGERS", pricePkr: 999, imageKey: "zinger_burger", badgeText: "", available: true, sortOrder: 1, createdAt: now, updatedAt: now,
+    })
+  );
+
+  // Order creation delivery fee enforcement (branch_1 fee is now Rs. 120, threshold is Rs. 800)
+  const makeOrder = (subtotal, deliveryFee, orderType = "DELIVERY", branchId = "branch_1") => ({
+    userId: CUSTOMER_A,
+    guestSessionId: "",
+    guestCheckout: false,
+    customerName: "Zainab",
+    customerEmail: "cust@gmail.com",
+    customerPhone: "03005554433",
+    orderType,
+    deliveryAddress: orderType === "PICKUP" ? "Self Pickup" : "House 10, Street 2, Area A",
+    paymentMethod: "Cash on Delivery",
+    branchId,
+    branchName: branchId === "branch_1" ? "Branch 1" : "Branch 2",
+    branchAdminEmails: [],
+    items: [{ itemId: "zinger_1", name: "Zinger Burger", quantity: 1, unitPricePkr: subtotal, lineTotalPkr: subtotal }],
+    itemsSummary: "1x Zinger Burger",
+    promoCode: "",
+    discountPkr: 0,
+    subtotalPkr: subtotal,
+    deliveryFeePkr: deliveryFee,
+    totalPkr: subtotal + deliveryFee,
+    status: "Pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // Rs. 500 DELIVERY with Rs. 0 fee -> DENIED (below Rs. 800!)
+  await assertFails(custDb.collection("orders").doc("ord_500_free_bad").set(makeOrder(500, 0)));
+  // Rs. 500 DELIVERY with Rs. 120 branch_1 fee -> SUCCEEDS
+  await assertSucceeds(custDb.collection("orders").doc("ord_500_paid").set(makeOrder(500, 120)));
+  // Rs. 799 DELIVERY with Rs. 120 branch_1 fee -> SUCCEEDS
+  await assertSucceeds(custDb.collection("orders").doc("ord_799_paid").set(makeOrder(799, 120)));
+  // Rs. 800 DELIVERY with Rs. 0 fee -> SUCCEEDS (free delivery threshold unlocked!)
+  await assertSucceeds(custDb.collection("orders").doc("ord_800_free").set(makeOrder(800, 0)));
+  // Rs. 800 DELIVERY with Rs. 120 fee -> DENIED (overcharging customer!)
+  await assertFails(custDb.collection("orders").doc("ord_800_overcharge").set(makeOrder(800, 120)));
+  // Rs. 500 PICKUP with Rs. 0 fee -> SUCCEEDS
+  await assertSucceeds(custDb.collection("orders").doc("ord_500_pickup").set(makeOrder(500, 0, "PICKUP")));
+
+  // Pending -> Confirmed / Rejected strictly owned by assigned Branch Admin ONLY
+  // SuperAdmin and Branch 2 Admin CANNOT confirm or reject Branch 1 Pending order
+  await assertFails(
+    superDb.collection("orders").doc("ord_500_paid").update({
+      status: "Confirmed", confirmedAt: new Date(Date.now() - 1500), updatedAt: new Date(Date.now() - 1500),
+    })
+  );
+  await assertFails(
+    branch2MgrDb.collection("orders").doc("ord_500_paid").update({
+      status: "Confirmed", confirmedAt: new Date(Date.now() - 1500), updatedAt: new Date(Date.now() - 1500),
+    })
+  );
+  // Branch 1 Admin accepts ord_500_paid (Pending -> Confirmed) and rejects ord_799_paid (Pending -> Rejected)
+  await assertSucceeds(
+    branch1MgrDb.collection("orders").doc("ord_500_paid").update({
+      status: "Confirmed", confirmedAt: new Date(Date.now() - 1500), updatedAt: new Date(Date.now() - 1500),
+    })
+  );
+  await assertSucceeds(
+    branch1MgrDb.collection("orders").doc("ord_799_paid").update({
+      status: "Rejected", rejectedAt: new Date(Date.now() - 1500), rejectionReason: "Sold out", updatedAt: new Date(Date.now() - 1500),
+    })
+  );
+  // Once Rejected, order status is locked (cannot be reopened)
+  await assertFails(
+    branch1MgrDb.collection("orders").doc("ord_799_paid").update({
+      status: "Confirmed", updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  // Active 6-stage progression succeeds: Confirmed -> Preparing -> Ready -> OutForDelivery -> Delivered
+  await assertSucceeds(branch1MgrDb.collection("orders").doc("ord_500_paid").update({ status: "Preparing", updatedAt: new Date(Date.now() - 1200) }));
+  await assertSucceeds(branch1MgrDb.collection("orders").doc("ord_500_paid").update({ status: "Ready", updatedAt: new Date(Date.now() - 1100) }));
+  await assertSucceeds(branch1MgrDb.collection("orders").doc("ord_500_paid").update({ status: "OutForDelivery", updatedAt: new Date(Date.now() - 1000) }));
+  await assertSucceeds(branch1MgrDb.collection("orders").doc("ord_500_paid").update({ status: "Delivered", updatedAt: new Date(Date.now() - 900) }));
+  // Locked once Delivered
+  await assertFails(branch1MgrDb.collection("orders").doc("ord_500_paid").update({ status: "Preparing", updatedAt: new Date(Date.now() - 800) }));
+});
+
 
 
 

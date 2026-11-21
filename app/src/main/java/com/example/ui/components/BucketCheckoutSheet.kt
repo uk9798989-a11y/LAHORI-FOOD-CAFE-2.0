@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.LocalMall
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Storefront
@@ -38,6 +39,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -57,7 +59,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -65,7 +69,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.BranchDirectory
 import com.example.model.CafeBranch
+import com.example.model.DEFAULT_PAYMENT_METHOD
+import com.example.model.DeliverySettings
 import com.example.model.MenuItem
+import com.example.model.OrderPricingEngine
 import com.example.model.OrderType
 import com.example.model.Promotion
 import com.example.ui.SharedSessionState
@@ -94,11 +101,13 @@ fun BucketCheckoutSheet(
         deliveryAddress: String,
         deliveryLatitude: Double,
         deliveryLongitude: Double,
-        guestCheckout: Boolean
+        guestCheckout: Boolean,
+        paymentMethod: String
     ) -> Unit,
     onDismiss: () -> Unit,
     branches: List<CafeBranch> = BranchDirectory.defaultBranches,
     branchPromos: List<Promotion> = emptyList(),
+    deliverySettings: DeliverySettings = DeliverySettings(),
     isLocatingGps: Boolean = false,
     onRequestLiveLocation: () -> Unit = {},
     onSaveAddressFromCheckout: (fullAddress: String, landmark: String) -> Unit = { _, _ -> }
@@ -107,7 +116,12 @@ fun BucketCheckoutSheet(
     var customerName by remember(defaultCustomerName) {
         mutableStateOf(defaultCustomerName.ifBlank { "Lahori Guest" })
     }
-    var customerPhone by remember { mutableStateOf("0300-1234567") }
+    var customerPhone by remember { mutableStateOf("") }
+    var cityAreaInput by remember(sessionState.selectedBranchId, branches) {
+        mutableStateOf(
+            BranchDirectory.byId(sessionState.selectedBranchId, branches).displayShortLabel()
+        )
+    }
     var deliveryAddressInput by remember {
         mutableStateOf(
             sessionState.selectedAddressStreet.ifBlank { sessionState.detectedGpsAddress }
@@ -138,10 +152,28 @@ fun BucketCheckoutSheet(
     var isValidatingPromo by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    // FREE DELIVERY permanently: Rs. 0 for every customer and every order
-    val deliveryFee = 0L
-    val grandTotal = (sessionState.subtotalPkr - sessionState.appliedDiscountPkr).coerceAtLeast(0L)
     val branch = BranchDirectory.byId(sessionState.selectedBranchId, branches)
+    val pricing = remember(
+        sessionState.subtotalPkr,
+        sessionState.appliedDiscountPkr,
+        sessionState.orderType,
+        branch.deliveryFeePkr,
+        deliverySettings.freeDeliveryMinOrderPkr
+    ) {
+        OrderPricingEngine.calculate(
+            subtotalPkr = sessionState.subtotalPkr,
+            discountPkr = sessionState.appliedDiscountPkr,
+            orderType = sessionState.orderType,
+            branchDeliveryFeePkr = branch.deliveryFeePkr,
+            freeDeliveryMinOrderPkr = deliverySettings.freeDeliveryMinOrderPkr
+        )
+    }
+    val paymentMethodLabel = if (sessionState.orderType == OrderType.PICKUP) {
+        "Pay at Counter"
+    } else {
+        DEFAULT_PAYMENT_METHOD
+    }
+    val grandTotal = pricing.totalPkr
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val successText = if (isDark) Color(0xFF4ADE80) else LahoriSuccess
 
@@ -217,55 +249,89 @@ fun BucketCheckoutSheet(
                     }
                 }
             } else {
-                // FREE DELIVERY Banner (Lahori Food Cafe Black + Gold + Red branding)
+                // Dynamic Free Delivery Threshold Banner (Rs. 800 minimum for FREE delivery)
+                val thresholdProgress = if (pricing.freeDeliveryMinOrderPkr <= 0L) {
+                    1f
+                } else {
+                    (pricing.subtotalPkr.toFloat() / pricing.freeDeliveryMinOrderPkr.toFloat()).coerceIn(0f, 1f)
+                }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = LahoriBlack,
-                    border = BorderStroke(1.2.dp, LahoriGold),
+                    border = BorderStroke(
+                        1.4.dp,
+                        if (pricing.isFreeDelivery) Color(0xFF4ADE80) else LahoriGold
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("checkout_free_delivery_banner")
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.LocalOffer,
-                                contentDescription = null,
-                                tint = LahoriGold,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Column {
-                                Text(
-                                    text = "FREE DELIVERY — Rs. 0",
-                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
-                                    color = LahoriGold
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = if (pricing.isFreeDelivery) Icons.Filled.CheckCircle else Icons.Filled.LocalOffer,
+                                    contentDescription = null,
+                                    tint = if (pricing.isFreeDelivery) Color(0xFF4ADE80) else LahoriGold,
+                                    modifier = Modifier.size(18.dp)
                                 )
+                                Column {
+                                    Text(
+                                        text = when {
+                                            sessionState.orderType == OrderType.PICKUP -> "SELF PICKUP — Rs. 0 DELIVERY"
+                                            pricing.isFreeDelivery -> "FREE DELIVERY UNLOCKED!"
+                                            else -> "Add Rs. ${pricing.remainingForFreeDeliveryPkr} more to unlock FREE DELIVERY."
+                                        },
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Black),
+                                        color = if (pricing.isFreeDelivery) Color(0xFF4ADE80) else LahoriGold
+                                    )
+                                    Text(
+                                        text = when {
+                                            sessionState.orderType == OrderType.PICKUP -> "Pick up freshly prepared at ${branch.displayShortLabel()}."
+                                            pricing.isFreeDelivery -> "Orders of ${formatPkr(pricing.freeDeliveryMinOrderPkr)}+ enjoy Rs. 0 delivery fee!"
+                                            else -> "Orders under ${formatPkr(pricing.freeDeliveryMinOrderPkr)} carry ${branch.displayShortLabel()} delivery fee: ${formatPkr(pricing.deliveryFeePkr)}"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = LahoriWhite.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+                            Surface(
+                                color = if (pricing.isFreeDelivery) LahoriSuccess else LahoriRed,
+                                shape = CircleShape
+                            ) {
                                 Text(
-                                    text = "Zero delivery charges on every Lahori Food Cafe order!",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = LahoriWhite.copy(alpha = 0.85f)
+                                    text = if (pricing.isFreeDelivery) "FREE" else formatPkr(pricing.deliveryFeePkr),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                                    color = LahoriWhite,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                                 )
                             }
                         }
-                        Surface(
-                            color = LahoriRed,
-                            shape = CircleShape
-                        ) {
-                            Text(
-                                text = "FREE",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
-                                color = LahoriWhite,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+
+                        if (sessionState.orderType == OrderType.DELIVERY) {
+                            LinearProgressIndicator(
+                                progress = { thresholdProgress },
+                                color = if (pricing.isFreeDelivery) Color(0xFF4ADE80) else LahoriGold,
+                                trackColor = LahoriWhite.copy(alpha = 0.2f),
+                                strokeCap = StrokeCap.Round,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(5.dp)
+                                    .clip(CircleShape)
                             )
                         }
                     }
@@ -352,6 +418,39 @@ fun BucketCheckoutSheet(
                             }
 
                             OutlinedTextField(
+                                value = cityAreaInput,
+                                onValueChange = {
+                                    cityAreaInput = it
+                                    errorText = null
+                                    addressSavedBanner = null
+                                },
+                                label = { Text("City / Area *") },
+                                placeholder = {
+                                    Text(
+                                        text = "e.g. Taranda Muhammad Panah / Zahir Pir",
+                                        color = LahoriWhite.copy(alpha = 0.55f),
+                                        fontSize = 13.sp
+                                    )
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = LahoriGold,
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.24f),
+                                    focusedContainerColor = LahoriDarkCard,
+                                    unfocusedContainerColor = LahoriDarkCard,
+                                    focusedTextColor = LahoriWhite,
+                                    unfocusedTextColor = LahoriWhite,
+                                    focusedLabelColor = LahoriGold,
+                                    unfocusedLabelColor = LahoriWhite.copy(alpha = 0.68f),
+                                    cursorColor = LahoriGold
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("checkout_city_area_input")
+                            )
+
+                            OutlinedTextField(
                                 value = deliveryAddressInput,
                                 onValueChange = {
                                     deliveryAddressInput = it
@@ -391,10 +490,10 @@ fun BucketCheckoutSheet(
                                     landmarkInput = it
                                     addressSavedBanner = null
                                 },
-                                label = { Text("Nearby landmark (optional)") },
+                                label = { Text("Nearby landmark / Delivery instructions (optional)") },
                                 placeholder = {
                                     Text(
-                                        text = "Nearby landmark (optional)",
+                                        text = "Nearby landmark or gate instructions (optional)",
                                         color = LahoriWhite.copy(alpha = 0.55f),
                                         fontSize = 13.sp
                                     )
@@ -852,7 +951,7 @@ fun BucketCheckoutSheet(
                     }
                 }
 
-                // Totals Breakdown (FREE DELIVERY Rs. 0 permanently)
+                // Totals Breakdown (Dynamic branch delivery fee + Rs. 800 FREE delivery threshold)
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = LahoriBlack,
@@ -870,22 +969,22 @@ fun BucketCheckoutSheet(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text("Subtotal", style = MaterialTheme.typography.bodyMedium, color = LahoriWhite.copy(alpha = 0.78f))
-                            Text(formatPkr(sessionState.subtotalPkr), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = LahoriWhite)
+                            Text(formatPkr(pricing.subtotalPkr), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = LahoriWhite)
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Delivery Charges", style = MaterialTheme.typography.bodyMedium, color = LahoriWhite.copy(alpha = 0.78f))
+                            Text("Delivery Fee", style = MaterialTheme.typography.bodyMedium, color = LahoriWhite.copy(alpha = 0.78f))
                             Text(
-                                text = "Rs. 0 (FREE)",
+                                text = if (pricing.deliveryFeePkr == 0L) "Rs. 0 (FREE)" else formatPkr(pricing.deliveryFeePkr),
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Black),
-                                color = LahoriGold,
+                                color = if (pricing.deliveryFeePkr == 0L) Color(0xFF4ADE80) else LahoriGold,
                                 modifier = Modifier.testTag("checkout_delivery_charges_value")
                             )
                         }
-                        if (sessionState.appliedDiscountPkr > 0L) {
+                        if (pricing.discountPkr > 0L) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -896,11 +995,29 @@ fun BucketCheckoutSheet(
                                     color = Color(0xFF4ADE80)
                                 )
                                 Text(
-                                    text = "- ${formatPkr(sessionState.appliedDiscountPkr)}",
+                                    text = "- ${formatPkr(pricing.discountPkr)}",
                                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                     color = Color(0xFF4ADE80)
                                 )
                             }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Filled.Payment, contentDescription = null, tint = LahoriGold, modifier = Modifier.size(15.dp))
+                                Text("Payment Method", style = MaterialTheme.typography.bodySmall, color = LahoriWhite.copy(alpha = 0.72f))
+                            }
+                            Text(
+                                text = paymentMethodLabel,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = LahoriWhite
+                            )
                         }
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = LahoriWhite.copy(alpha = 0.16f))
                         Row(
@@ -926,25 +1043,33 @@ fun BucketCheckoutSheet(
                     onClick = {
                         val trimmedName = customerName.trim()
                         val trimmedPhone = customerPhone.trim()
+                        val trimmedCity = cityAreaInput.trim()
                         val trimmedAddr = deliveryAddressInput.trim()
                         val trimmedLandmark = landmarkInput.trim()
                         val isDelivery = sessionState.orderType == OrderType.DELIVERY
                         val gpsLat = if (isDelivery) (sessionState.deviceLatitude ?: 0.0) else 0.0
                         val gpsLng = if (isDelivery) (sessionState.deviceLongitude ?: 0.0) else 0.0
                         if (trimmedName.isEmpty()) {
-                            errorText = "Please enter recipient name."
+                            errorText = "Please enter your name."
+                        } else if (trimmedPhone.filter { it.isDigit() }.length < 7) {
+                            errorText = "Please enter a valid contact phone number (at least 7 digits)."
                         } else if (isDelivery && trimmedAddr.isEmpty()) {
                             errorText = "Please enter your complete delivery address before placing your order."
                         } else {
+                            errorText = null
+                            val combinedStreet = if (isDelivery && trimmedCity.isNotBlank() && !trimmedAddr.contains(trimmedCity, ignoreCase = true)) {
+                                "$trimmedAddr, $trimmedCity"
+                            } else {
+                                trimmedAddr
+                            }
                             if (isDelivery) {
-                                // Persist customer's manual address automatically for future orders
-                                onSaveAddressFromCheckout(trimmedAddr, trimmedLandmark)
+                                onSaveAddressFromCheckout(combinedStreet, trimmedLandmark)
                             }
                             val finalAddr = if (isDelivery) {
-                                if (trimmedLandmark.isNotBlank() && !trimmedAddr.contains(trimmedLandmark, ignoreCase = true)) {
-                                    "$trimmedAddr (Near: $trimmedLandmark)"
+                                if (trimmedLandmark.isNotBlank() && !combinedStreet.contains(trimmedLandmark, ignoreCase = true)) {
+                                    "$combinedStreet (Near: $trimmedLandmark)"
                                 } else {
-                                    trimmedAddr
+                                    combinedStreet
                                 }
                             } else {
                                 "Self Pickup — ${branch.shortAddress}"
@@ -955,7 +1080,8 @@ fun BucketCheckoutSheet(
                                 finalAddr,
                                 gpsLat,
                                 gpsLng,
-                                guestCheckoutToggle
+                                guestCheckoutToggle,
+                                paymentMethodLabel
                             )
                         }
                     },
