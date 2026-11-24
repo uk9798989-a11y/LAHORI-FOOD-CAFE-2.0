@@ -471,7 +471,8 @@ private fun GuestCafeShell(
                             snackbarHostState.currentSnackbarData?.dismiss()
                             snackbarHostState.showSnackbar("Added ${item.name} to Bucket")
                         }
-                    }
+                    },
+                    onDecrementFromBucket = { sessionCart.decrementCartItem(it) }
                 )
                 CafeTab.Menu -> MenuScreen(
                     menuItems = SeedMenuData.initialItems,
@@ -479,7 +480,8 @@ private fun GuestCafeShell(
                     cartQuantities = cartQuantities,
                     searchQuery = searchQuery,
                     onToggleFavorite = { sessionCart.toggleGuestFavorite(it) },
-                    onAddToBucket = { sessionCart.addToCart(it) }
+                    onAddToBucket = { sessionCart.addToCart(it) },
+                    onDecrementFromBucket = { sessionCart.decrementCartItem(it) }
                 )
                 CafeTab.Rewards -> RewardsScreen(
                     orders = emptyList(),
@@ -1563,7 +1565,9 @@ private fun AuthenticatedCafeShell(
                         }
                     },
                     activeOrder = latestActiveOrder,
-                    onTrackActiveOrder = { order -> viewModel.startTrackingOrder(order.id) }
+                    onTrackActiveOrder = { order -> viewModel.startTrackingOrder(order.id) },
+                    menuState = effectiveMenuState,
+                    onDecrementFromBucket = { sessionCart.decrementCartItem(it) }
                 )
                 CafeTab.Menu -> MenuScreen(
                     menuItems = effectiveMenuItems,
@@ -1571,7 +1575,9 @@ private fun AuthenticatedCafeShell(
                     cartQuantities = cartQuantities,
                     searchQuery = searchQuery,
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
-                    onAddToBucket = { sessionCart.addToCart(it) }
+                    onAddToBucket = { sessionCart.addToCart(it) },
+                    menuState = effectiveMenuState,
+                    onDecrementFromBucket = { sessionCart.decrementCartItem(it) }
                 )
                 CafeTab.Rewards -> RewardsScreen(
                     orders = ordersList,

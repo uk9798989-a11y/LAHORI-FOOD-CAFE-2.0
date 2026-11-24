@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,8 +16,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -34,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,10 +58,17 @@ import com.example.model.CafeOrder
 import com.example.model.MenuItem
 import com.example.model.Promotion
 import com.example.model.SeedMenuData
+import com.example.model.UiState
 import com.example.ui.components.ActiveOrderMiniTrackerStrip
 import com.example.ui.components.FoodArtworkBox
-import com.example.ui.components.MenuItemCard
+import com.example.ui.components.FoodGridEmptyCard
+import com.example.ui.components.FoodGridErrorCard
+import com.example.ui.components.KfcItemQuickViewSheet
+import com.example.ui.components.KfcProductCard
+import com.example.ui.components.KfcProductCardSkeleton
 import com.example.ui.components.formatPkr
+import com.example.ui.components.responsiveFoodGridColumns
+import com.example.ui.components.responsiveFoodGridSpacing
 import com.example.ui.theme.LahoriBlack
 import com.example.ui.theme.LahoriGold
 import com.example.ui.theme.LahoriRed
@@ -80,12 +92,29 @@ fun ExploreScreen(
     appliedPromoCode: String = "",
     onApplyBranchPromo: (String) -> Unit = {},
     activeOrder: CafeOrder? = null,
-    onTrackActiveOrder: (CafeOrder) -> Unit = {}
+    onTrackActiveOrder: (CafeOrder) -> Unit = {},
+    menuState: UiState<List<MenuItem>> = UiState.Success(menuItems),
+    onDecrementFromBucket: ((String) -> Unit)? = null
 ) {
     var selectedCategory by remember { mutableStateOf("ALL") }
+    var quickViewItem by remember { mutableStateOf<MenuItem?>(null) }
+    var quickViewSizeIndex by remember { mutableIntStateOf(0) }
 
-    val filteredItems = remember(menuItems, selectedCategory, searchQuery) {
-        menuItems.filter { item ->
+    val effectiveItems = when (menuState) {
+        is UiState.Success -> menuState.data
+        else -> menuItems
+    }
+
+    val dynamicCategories = remember(effectiveItems) {
+        val extras = effectiveItems
+            .map { it.category.trim().uppercase() }
+            .filter { cat -> cat.isNotBlank() && SeedMenuData.categories.none { it.equals(cat, ignoreCase = true) } }
+            .distinct()
+        SeedMenuData.categories + extras
+    }
+
+    val filteredItems = remember(effectiveItems, selectedCategory, searchQuery) {
+        effectiveItems.filter { item ->
             val matchesCat = selectedCategory == "ALL" || item.category.equals(selectedCategory, ignoreCase = true)
             val matchesSearch = searchQuery.isBlank() ||
                 item.name.contains(searchQuery, ignoreCase = true) ||
@@ -95,208 +124,230 @@ fun ExploreScreen(
         }
     }
 
-    val pairedRows = remember(filteredItems) {
-        filteredItems.chunked(2)
-    }
-
-    LazyColumn(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        if (activeOrder != null) {
-            item(key = "active_order_live_strip") {
-                ActiveOrderMiniTrackerStrip(
-                    order = activeOrder,
-                    onTrackClick = { onTrackActiveOrder(activeOrder) },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-        }
+        val columns = responsiveFoodGridColumns(maxWidth)
+        val gridSpacing = responsiveFoodGridSpacing(maxWidth)
 
-        // 0. Branch-Exclusive Seasonal Banners (ONLY shown for customers who selected this branch)
-        if (branchBanners.isNotEmpty()) {
-            item(key = "branch_seasonal_banners") {
-                BranchSeasonalBannersCarousel(
-                    branchLabel = selectedBranchLabel.ifBlank { "Branch" },
-                    banners = branchBanners,
-                    onSelectCategory = { category -> selectedCategory = category },
-                    onApplyPromoCode = onApplyBranchPromo
-                )
-            }
-        }
-
-        // 0b. Branch-Exclusive Temporary Discount Codes
-        if (branchPromos.isNotEmpty()) {
-            item(key = "branch_exclusive_promos") {
-                BranchExclusivePromosRow(
-                    branchLabel = selectedBranchLabel.ifBlank { "Branch" },
-                    promos = branchPromos,
-                    appliedPromoCode = appliedPromoCode,
-                    onApplyPromo = onApplyBranchPromo
-                )
-            }
-        }
-
-        // 1. Large, Striking Auto-Scrolling Hero Carousel
-        item(key = "hero_banner") {
-            HeroPromoCarousel(
-                menuItems = menuItems,
-                onBannerClick = { category ->
-                    selectedCategory = category
-                }
-            )
-        }
-
-        // 2. Modern Pill-Shaped Horizontal Categories (No visible scrollbars)
-        item(key = "categories_row") {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "EXPLORE MENU",
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Black
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("horizontal_categories_list")
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columns),
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("explore_responsive_grid"),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 16.dp,
+                bottom = 120.dp
+            ),
+            horizontalArrangement = Arrangement.spacedBy(gridSpacing),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (activeOrder != null) {
+                item(
+                    key = "active_order_live_strip",
+                    span = { GridItemSpan(maxLineSpan) }
                 ) {
-                    items(SeedMenuData.categories) { category ->
-                        val isSelected = selectedCategory == category
-                        Surface(
-                            onClick = { selectedCategory = category },
-                            shape = CircleShape,
-                            color = if (isSelected) LahoriRed else MaterialTheme.colorScheme.surfaceContainerHigh,
-                            shadowElevation = if (isSelected) 4.dp else 0.dp,
-                            modifier = Modifier
-                                .height(42.dp)
-                                .testTag("category_chip_${category.lowercase().replace(" ", "_")}")
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.padding(horizontal = 18.dp)
+                    ActiveOrderMiniTrackerStrip(
+                        order = activeOrder,
+                        onTrackClick = { onTrackActiveOrder(activeOrder) }
+                    )
+                }
+            }
+
+            // 0. Branch-Exclusive Seasonal Banners (ONLY shown for customers who selected this branch)
+            if (branchBanners.isNotEmpty()) {
+                item(
+                    key = "branch_seasonal_banners",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
+                    BranchSeasonalBannersCarousel(
+                        branchLabel = selectedBranchLabel.ifBlank { "Branch" },
+                        banners = branchBanners,
+                        onSelectCategory = { category -> selectedCategory = category },
+                        onApplyPromoCode = onApplyBranchPromo
+                    )
+                }
+            }
+
+            // 0b. Branch-Exclusive Temporary Discount Codes
+            if (branchPromos.isNotEmpty()) {
+                item(
+                    key = "branch_exclusive_promos",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
+                    BranchExclusivePromosRow(
+                        branchLabel = selectedBranchLabel.ifBlank { "Branch" },
+                        promos = branchPromos,
+                        appliedPromoCode = appliedPromoCode,
+                        onApplyPromo = onApplyBranchPromo
+                    )
+                }
+            }
+
+            // 1. Large, Striking Auto-Scrolling Hero Carousel
+            item(
+                key = "hero_banner",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
+                HeroPromoCarousel(
+                    menuItems = effectiveItems,
+                    onBannerClick = { category ->
+                        selectedCategory = category
+                    }
+                )
+            }
+
+            // 2. Modern Pill-Shaped Horizontal Categories
+            item(
+                key = "categories_row",
+                span = { GridItemSpan(maxLineSpan) }
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "EXPLORE MENU",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black
+                        ),
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("horizontal_categories_list")
+                    ) {
+                        items(dynamicCategories, key = { it }) { category ->
+                            val isSelected = selectedCategory.equals(category, ignoreCase = true)
+                            Surface(
+                                onClick = { selectedCategory = category },
+                                shape = CircleShape,
+                                color = if (isSelected) LahoriRed else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                shadowElevation = if (isSelected) 4.dp else 0.dp,
+                                modifier = Modifier
+                                    .height(42.dp)
+                                    .testTag("category_chip_${category.lowercase().replace(" ", "_")}")
                             ) {
-                                Text(
-                                    text = category,
-                                    style = MaterialTheme.typography.labelLarge.copy(
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold
-                                    ),
-                                    color = if (isSelected) LahoriWhite else MaterialTheme.colorScheme.onSurface
-                                )
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 18.dp)
+                                ) {
+                                    Text(
+                                        text = category,
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold
+                                        ),
+                                        color = if (isSelected) LahoriWhite else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // 3. Section Header for 2-Column Food Grid
-        item(key = "menu_section_header") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // 3. Section Header for Responsive KFC Food Grid
+            item(
+                key = "menu_section_header",
+                span = { GridItemSpan(maxLineSpan) }
             ) {
-                Text(
-                    text = if (selectedCategory == "ALL") "HOT & CRISPY FAVORITES" else selectedCategory,
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Black
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primaryContainer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "${filteredItems.size} ITEMS",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        text = if (selectedCategory == "ALL") "HOT & CRISPY FAVORITES" else selectedCategory,
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black
+                        ),
+                        color = MaterialTheme.colorScheme.onBackground
                     )
-                }
-            }
-        }
-
-        if (pairedRows.isEmpty()) {
-            item(key = "empty_explore") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 4.dp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Text(
-                            text = "No matching items found",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Try another category or clear your search filter.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "${filteredItems.size} ITEMS",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
                     }
                 }
             }
-        } else {
-            items(pairedRows) { pair ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+
+            if (menuState is UiState.Error) {
+                item(
+                    key = "explore_menu_error",
+                    span = { GridItemSpan(maxLineSpan) }
                 ) {
-                    val left = pair[0]
-                    MenuItemCard(
-                        item = left,
-                        isFavorite = favoriteIds.contains(left.id),
-                        cartQuantities = cartQuantities,
-                        onToggleFavorite = { onToggleFavorite(left.id) },
-                        onAddToBucket = onAddToBucket,
-                        modifier = Modifier.weight(1f)
+                    FoodGridErrorCard(message = menuState.message)
+                }
+            }
+
+            if (menuState is UiState.Loading && filteredItems.isEmpty()) {
+                items(
+                    count = columns * 3,
+                    key = { idx -> "explore_skeleton_$idx" }
+                ) {
+                    KfcProductCardSkeleton()
+                }
+            } else if (filteredItems.isEmpty()) {
+                item(
+                    key = "empty_explore",
+                    span = { GridItemSpan(maxLineSpan) }
+                ) {
+                    FoodGridEmptyCard(
+                        title = "No matching items found",
+                        subtitle = "Try another category or clear your search filter.",
+                        actionLabel = if (selectedCategory != "ALL") "SHOW ALL ITEMS" else null,
+                        onActionClick = { selectedCategory = "ALL" }
                     )
-                    if (pair.size > 1) {
-                        val right = pair[1]
-                        MenuItemCard(
-                            item = right,
-                            isFavorite = favoriteIds.contains(right.id),
-                            cartQuantities = cartQuantities,
-                            onToggleFavorite = { onToggleFavorite(right.id) },
-                            onAddToBucket = onAddToBucket,
-                            modifier = Modifier.weight(1f)
-                        )
-                    } else {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
+                }
+            } else {
+                items(
+                    items = filteredItems,
+                    key = { it.id }
+                ) { item ->
+                    KfcProductCard(
+                        item = item,
+                        isFavorite = favoriteIds.contains(item.id),
+                        cartQuantities = cartQuantities,
+                        onToggleFavorite = { onToggleFavorite(item.id) },
+                        onAddToBucket = onAddToBucket,
+                        onDecrementFromBucket = onDecrementFromBucket,
+                        onCardClick = { clicked, sizeIdx ->
+                            quickViewItem = clicked
+                            quickViewSizeIndex = sizeIdx
+                        }
+                    )
                 }
             }
         }
+    }
+
+    val inspectedItem = quickViewItem
+    if (inspectedItem != null) {
+        KfcItemQuickViewSheet(
+            item = inspectedItem,
+            initialSizeIndex = quickViewSizeIndex,
+            isFavorite = favoriteIds.contains(inspectedItem.id),
+            cartQuantities = cartQuantities,
+            onToggleFavorite = { onToggleFavorite(inspectedItem.id) },
+            onAddToBucket = onAddToBucket,
+            onDismiss = { quickViewItem = null }
+        )
     }
 }
 
@@ -326,8 +377,7 @@ private fun HeroPromoCarousel(
     ) {
         HorizontalPager(
             state = pagerState,
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            pageSpacing = 14.dp,
+            pageSpacing = 12.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(210.dp)
@@ -478,9 +528,7 @@ private fun BranchSeasonalBannersCarousel(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -516,7 +564,6 @@ private fun BranchSeasonalBannersCarousel(
 
         HorizontalPager(
             state = pagerState,
-            contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp,
             modifier = Modifier
                 .fillMaxWidth()
@@ -694,9 +741,7 @@ private fun BranchExclusivePromosRow(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -714,7 +759,6 @@ private fun BranchExclusivePromosRow(
         }
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
